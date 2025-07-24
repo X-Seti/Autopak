@@ -123,32 +123,37 @@ show_detailed_progress() {
     local filename="$3"
     local operation="$4"
     local size="$5"
-    
+
     if [[ "$QUIET" == true ]]; then
         return
     fi #1
-    
+
     local percent=$((current * 100 / total))
     local bar_length=40
     local filled_length=$((percent * bar_length / 100))
-    
+
     local bar=""
+
     for ((i=0; i<filled_length; i++)); do bar+="█"; done
     for ((i=filled_length; i<bar_length; i++)); do bar+="░"; done
-    
+
     local eta=""
+
     if (( current > 0 )); then
         local elapsed=$(($(date +%s) - START_TIME))
-        local rate=$((current * 1000 / elapsed))  # files per second * 1000
-        if (( rate > 0 )); then
-            local remaining=$((total - current))
-            local eta_seconds=$((remaining * 1000 / rate))
-            local eta_min=$((eta_seconds / 60))
-            local eta_sec=$((eta_seconds % 60))
-            eta=" ETA: ${eta_min}m${eta_sec}s"
-        fi #1
-    fi #2
-    
+        # Fix: Check if elapsed is greater than 0 to avoid division by zero
+        if (( elapsed > 0 )); then
+            local rate=$((current * 1000 / elapsed))
+            if (( rate > 0 )); then
+                local remaining=$((total - current))
+                local eta_seconds=$((remaining * 1000 / rate))
+                local eta_min=$((eta_seconds / 60))
+                local eta_sec=$((eta_seconds % 60))
+                eta=" ETA: ${eta_min}m${eta_sec}s"
+            fi #3
+        fi #2
+    fi #1
+
     printf "\r[$bar] %d%% (%d/%d) %s %s %s%s" \
            "$percent" "$current" "$total" "$operation" \
            "$(basename "$filename")" "$size" "$eta"
