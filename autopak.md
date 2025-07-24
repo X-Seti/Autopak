@@ -1,13 +1,10 @@
 #
 # X-Seti - March23 2024 - AutoPak - Advanced Archive Repackaging Tool
 # Version: 1.0
-#                     AutoPak - Advanced Archive Repackaging Tool
-#                                 Version 1.0
-#
-#
+#             
 #   DESCRIPTION:
 #   AutoPak is a comprehensive bash script designed to automatically convert
-#   and optimize archive files for maximum compression and standardization.
+#   and optimise archive files for maximum compression and standardisation.
 #   It intelligently handles a wide variety of archive formats and provides
 #   enterprise-grade features for batch processing.
 #
@@ -24,7 +21,7 @@
 #   SUPPORTED INPUT FORMATS:
 #   Archives: zip, rar, 7z, tar, tar.gz, tar.bz2, tar.xz, tar.zst
 #   Compressed: gz, xz, bz2, lz, lzh, lha, z, Z (compress)
-#   Specialized: cab, iso, img, dd, deb, pkg, ace, arj
+#   Specialised: cab, iso, img, dd, deb, pkg, ace, arj
 #   Multi-part: .part01.rar, .r00/.r01, .part1 (with .rev support)
 #
 #   OUTPUT FORMATS:
@@ -52,11 +49,11 @@
 #   • Automatic backup creation
 #
 #   TYPICAL USE CASES:
-#   • Storage optimization (convert old archives to modern compression)
-#   • Format standardization (unified archive format across systems)
+#   • Storage optimisation (convert old archives to modern compression)
+#   • Format standardisation (unified archive format across systems)
 #   • Corrupted archive recovery (repair and salvage data)
 #   • Multi-part archive processing (extract and repack complex sets)
-#   • Batch archive maintenance (automated cleanup and optimization)
+#   • Batch archive maintenance (automated cleanup and optimisation)
 #
 #   AUTHOR: X-Seti
 #   DATE: March 2024
