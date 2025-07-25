@@ -542,13 +542,21 @@ check_disk_space() {
 # Estimate required space
 estimate_space_needed() {
     local total_size=0
-    
+    local current_size=0
+
     # Build find options for recursion
     local FIND_OPTS=()
     $RECURSIVE || FIND_OPTS+=(-maxdepth 1)
     
     while IFS= read -r -d '' file; do
-        [[ -f "$file" ]] && total_size=$((total_size + $(stat -c%s "$file")))
+        #[[ -f "$file" ]] && total_size=$((total_size + $(stat -c%s "$file")))
+
+        if [[ -f "$file" ]]; then
+            current_size=$(stat -c%s "$file")
+            if (( current_size > max_size )); then
+                max_size=$current_size
+            fi #2
+        fi #1
     done < <(find "$TARG_DIR" "${FIND_OPTS[@]}" -type f \( \
         -iname '*.zip' -o -iname '*.rar' -o -iname '*.7z' -o -iname '*.exe' -o \
         -iname '*.tar' -o -iname '*.tar.gz' -o -iname '*.tgz' -o -iname '*.tar.bz2' -o \
@@ -562,6 +570,7 @@ estimate_space_needed() {
     
     # Estimate 150% of original size needed for temporary space
     echo $((total_size * 15 / 10 / 1024 / 1024))
+    echo $((max_size * PAR_JOBS * 15 / 10 / 1024 / 1024))
 } #closed estimate_space_needed
 
 # Progress indicator
