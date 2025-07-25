@@ -531,7 +531,7 @@ check_disk_space() {
     local target_dir="$1"
     local required_space_mb=$2
     
-    local available_space=$(df -BM "$target_dir" | awk 'NR==2 {print $4}' | sed 's/M//')
+    local available_space=$(df -BM "$target_dir" | awk 'NR==2 {gsub(/M/, "", $4); print $4+0}')
     
     if (( available_space < required_space_mb )); then
         echo "❌ Insufficient disk space. Required: ${required_space_mb}MB, Available: ${available_space}MB"
