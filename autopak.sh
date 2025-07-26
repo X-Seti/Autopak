@@ -44,6 +44,9 @@ PASSWORD_VAULT=""  # Encrypted password vault file
 MASTER_PASSWORD=""  # Master password for vault
 ENCRYPT_ARCHIVES=false  # Encrypt created archives
 SECURE_DELETE=false  # Securely overwrite deleted files
+SKIP_PASSWORDED=false  # Skip password-protected archives automatically
+FLAG_PASSWORDED=false  # Flag passworded files for review
+PASSWORDED_LOG="/tmp/autopak_passworded_$(date +%Y%m%d_%H%M%S).log"  # Log of skipped passworded files
 
 # Statistics and progress
 TOT_F=0
@@ -532,11 +535,16 @@ scan_files() {
         fi #1
         
         # Skip already repacked files
-        if [[ "$should_process" == true && "$file" =~ _repacked(\.new[0-9]*)?\.([7z|zip|tar\.(gz|xz|zst)|tar])$ ]]; then
+        #if [[ "$should_process" == true && "$file" =~ #_repacked(\.new[0-9]*)?\.([7z|zip|tar\.(gz|xz|zst)|tar])$ ]]; then
+        #    should_process=false
+        #    skip_reason="already repacked"
+        #fi #1
+
+        if [[ "$basename" =~ _repacked ]]; then
             should_process=false
             skip_reason="already repacked"
-        fi #1
-        
+        fi
+
         # Skip already repacked files/folders
         if [[ "$should_process" == true ]]; then
             if $FOLDERS_TO_ARCS; then
@@ -844,6 +852,9 @@ SECURITY & ENCRYPTION:
     --password-vault FILE    Encrypted password vault file
     --encrypt-archives       Encrypt created archives with AES-256
     --secure-delete          Securely overwrite deleted files
+    --skip-passworded        Skip password-protected archives automatically
+    --flag-passworded        Log passworded files for review
+    --passworded-log FILE    Custom log file for passworded archives
 
 SIZE FORMATS:
     Sizes can be specified with suffixes: K (KB), M (MB), G (GB)
@@ -928,6 +939,9 @@ parse_arguments() {
             --password-file) shift; PASSWORD_FILE="$1" ;;
             --password-vault) shift; PASSWORD_VAULT="$1" ;;
             --encrypt-archives) ENCRYPT_ARCHIVES=true ;;
+            --skip-passworded) SKIP_PASSWORDED=true ;;
+            --flag-passworded) FLAG_PASSWORDED=true ;;
+            --passworded-log) shift; PASSWORDED_LOG="$1" ;;
             --secure-delete) SECURE_DELETE=true ;;
             --cpu-limit)
                 shift
@@ -1017,12 +1031,6 @@ process_archive() {
     local current_num="$2"
     local total_num="$3"
 
-    # Check if already processed (resume functionality)
-    if $RESUME && is_already_processed "$FILE"; then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Already processed: $(basename "$FILE")"
-        return 0
-    fi
-
     local BASENAME=$(basename "$FILE")
     local EXT="${BASENAME##*.}"
     local STRIPPED_NAME="${BASENAME%.*}"
@@ -1034,13 +1042,19 @@ process_archive() {
         [[ ! "$QUIET" == true ]] && echo "⏩ Already processed: $(basename "$FILE")"
         return 0
     fi #1
-    
-    local BASENAME=$(basename "$FILE")
-    local EXT="${BASENAME##*.}"
-    local STRIPPED_NAME="${BASENAME%.*}"
-    local TMP_DIR="$WORK_DIR/${STRIPPED_NAME}_$$_$current_num"
-    local O_SIZE=$(get_file_size "$FILE")
-    
+
+    local ext_lower=$(echo "$EXT" | tr '[:upper:]' '[:lower:]')
+    if [[ "$ext_lower" =~ ^(zip|rar|7z)$ ]] && is_archive_passworded "$FILE" "$ext_lower"; then
+        if [[ "$SKIP_PASSWORDED" == true ]]; then
+            log_passworded_file "$FILE" "Archive detected as password-protected"
+            [[ ! "$QUIET" == true ]] && echo "⏩ Skipping passworded: $(basename "$FILE")"
+            SKP_FILS+=("$FILE")
+            return 0
+        elif [[ "$FLAG_PASSWORDED" == true ]]; then
+            log_passworded_file "$FILE" "Archive detected as password-protected, will prompt for password"
+        fi
+    fi
+
     # Size filtering
     if (( MIN_SIZE > 0 && O_SIZE < MIN_SIZE )); then
         [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (too small): $BASENAME"
@@ -1530,6 +1544,18 @@ process_folder() {
     local BASENAME=$(basename "$FOLDER")
     local FOLDER_SIZE=$(du -sb "$FOLDER" 2>/dev/null | cut -f1)
 
+    local ext_lower=$(echo "$EXT" | tr '[:upper:]' '[:lower:]')
+    if [[ "$ext_lower" =~ ^(zip|rar|7z)$ ]] && is_archive_passworded "$FILE" "$ext_lower"; then
+        if [[ "$SKIP_PASSWORDED" == true ]]; then
+            log_passworded_file "$FILE" "Archive detected as password-protected"
+            [[ ! "$QUIET" == true ]] && echo "⏩ Skipping passworded: $(basename "$FILE")"
+            SKP_FILS+=("$FILE")
+            return 0
+        elif [[ "$FLAG_PASSWORDED" == true ]]; then
+            log_passworded_file "$FILE" "Archive detected as password-protected, will prompt for password"
+        fi
+    fi
+
     # Size filtering
     if (( MIN_SIZE > 0 && FOLDER_SIZE < MIN_SIZE )); then
         [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (too small): $BASENAME"
@@ -1721,6 +1747,18 @@ process_unpack() {
         [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (folder exists): $FOLDER_NAME"
         SKP_FILS+=("$ARCHIVE")
         return 0
+    fi
+
+    local ext_lower=$(echo "$EXT" | tr '[:upper:]' '[:lower:]')
+    if [[ "$ext_lower" =~ ^(zip|rar|7z)$ ]] && is_archive_passworded "$FILE" "$ext_lower"; then
+        if [[ "$SKIP_PASSWORDED" == true ]]; then
+            log_passworded_file "$FILE" "Archive detected as password-protected"
+            [[ ! "$QUIET" == true ]] && echo "⏩ Skipping passworded: $(basename "$FILE")"
+            SKP_FILS+=("$FILE")
+            return 0
+        elif [[ "$FLAG_PASSWORDED" == true ]]; then
+            log_passworded_file "$FILE" "Archive detected as password-protected, will prompt for password"
+        fi
     fi
 
     # Size filtering
@@ -1959,6 +1997,54 @@ EOF
 
     [[ ! "$QUIET" == true ]] && echo "📋 Generated checksum: $(basename "$checksum_file")"
 } #closed generate_checksum_file
+
+# Check if archive is password protected #vers 1
+is_archive_passworded() {
+    local archive_file="$1"
+    local archive_type="$2"
+
+    case "$archive_type" in
+        zip)
+            # Check for password protection in ZIP
+            if unzip -t "$archive_file" 2>&1 | grep -q "password"; then
+                return 0  # Is passworded
+            fi
+            ;;
+        rar)
+            # Check for password protection in RAR
+            if unrar t "$archive_file" 2>&1 | grep -q "password\|encrypted"; then
+                return 0  # Is passworded
+            fi
+            ;;
+        7z)
+            # Check for password protection in 7z
+            if 7z t "$archive_file" 2>&1 | grep -q "password\|Wrong password"; then
+                return 0  # Is passworded
+            fi
+            ;;
+    esac
+
+    return 1  # Not passworded
+} #closed is_archive_passworded
+
+# Log passworded file #vers 1
+log_passworded_file() {
+    local archive_file="$1"
+    local reason="$2"
+
+    if [[ "$FLAG_PASSWORDED" == true ]]; then
+        {
+            echo "Passworded file detected: $(date -Iseconds)"
+            echo "File: $archive_file"
+            echo "Size: $(get_file_size "$archive_file") bytes ($(format_size "$(get_file_size "$archive_file")"))"
+            echo "Reason: $reason"
+            echo "Location: $(dirname "$archive_file")"
+            echo "---"
+        } >> "$PASSWORDED_LOG"
+
+        [[ ! "$QUIET" == true ]] && echo "🔐 Logged passworded file: $(basename "$archive_file")"
+    fi
+} #closed log_passworded_file
 
 # Check for duplicate files using checksums #vers 1
 check_for_duplicates() {
@@ -2234,7 +2320,7 @@ secure_delete_file() {
     if [[ ! "$SECURE_DELETE" == true ]] || [[ ! -f "$file" ]]; then
         secure_delete_file "$FILE"
         return 0
-    fi
+    fi #1
 
     [[ ! "$QUIET" == true ]] && echo "🔒 Securely deleting: $(basename "$file")"
 
@@ -2249,9 +2335,9 @@ secure_delete_file() {
         if (( filesize > 0 )); then
             dd if=/dev/urandom of="$file" bs=1024 count=$((filesize / 1024 + 1)) 2>/dev/null
             sync
-        fi
+        fi #2
         secure_delete_file "$FILE"
-    fi
+    fi #1
 
     [[ ! "$QUIET" == true ]] && echo "✅ Secure deletion completed"
 } #closed secure_delete_file
@@ -2262,18 +2348,50 @@ extract_encrypted_archive() {
     local temp_dir="$2"
     local archive_type="$3"
 
+    # Check if we should skip passworded files
+    if [[ "$SKIP_PASSWORDED" == true ]]; then
+        log_passworded_file "$archive_file" "Skipped due to --skip-passworded flag"
+        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping passworded archive: $(basename "$archive_file")"
+        return 1  # Return failure to skip processing
+    fi #1
+
     local password=""
     local extraction_success=false
 
-    # Try to get password from vault first
+        # Try to get password from vault first
     if [[ -n "$PASSWORD_VAULT" ]]; then
         password=$(get_password_from_vault "$PASSWORD_VAULT" "$(basename "$archive_file")")
-    fi
+    fi #1
 
     # Try password file if no vault password found
     if [[ -z "$password" && -f "$PASSWORD_FILE" ]]; then
         password=$(head -n1 "$PASSWORD_FILE")
-    fi
+    fi #1
+
+    # If still no password, check if we should prompt or skip
+    if [[ -z "$password" ]]; then
+        if [[ "$FLAG_PASSWORDED" == true ]]; then
+            log_passworded_file "$archive_file" "No password available, requires manual input"
+        fi #1
+
+        read -s -p "Enter password for $(basename "$archive_file") (or Ctrl+C to skip): " password
+        echo
+
+        # Optionally store in vault
+        if [[ -n "$PASSWORD_VAULT" && -n "$password" ]]; then
+            add_password_to_vault "$PASSWORD_VAULT" "$(basename "$archive_file")" "$password"
+        fi #2
+    fi #1
+
+    # Try to get password from vault first
+    if [[ -n "$PASSWORD_VAULT" ]]; then
+        password=$(get_password_from_vault "$PASSWORD_VAULT" "$(basename "$archive_file")")
+    fi #1
+
+    # Try password file if no vault password found
+    if [[ -z "$password" && -f "$PASSWORD_FILE" ]]; then
+        password=$(head -n1 "$PASSWORD_FILE")
+    fi #1
 
     # If still no password, prompt user
     if [[ -z "$password" ]]; then
@@ -2283,8 +2401,8 @@ extract_encrypted_archive() {
         # Optionally store in vault
         if [[ -n "$PASSWORD_VAULT" && -n "$password" ]]; then
             add_password_to_vault "$PASSWORD_VAULT" "$(basename "$archive_file")" "$password"
-        fi
-    fi
+        fi #2
+    fi #1
 
     # Try extraction with password
     case "$archive_type" in
@@ -2297,7 +2415,7 @@ extract_encrypted_archive() {
         7z)
             7z x -p"$password" -bd -y -o"$temp_dir" "$archive_file" >/dev/null 2>&1 && extraction_success=true
             ;;
-    esac
+    esac # in "$archive_type"
 
     if [[ "$extraction_success" == true ]]; then
         [[ ! "$QUIET" == true ]] && echo "🔓 Successfully extracted encrypted archive"
@@ -2305,7 +2423,7 @@ extract_encrypted_archive() {
     else
         [[ ! "$QUIET" == true ]] && echo "❌ Failed to extract encrypted archive (wrong password?)"
         return 1
-    fi
+    fi #1
 } #closed extract_encrypted_archive
 
 # Create encrypted archive #vers 1
@@ -2652,6 +2770,15 @@ check_for_duplicates
     echo "❌ Failed: ${#FAIL_F[@]}"
     echo "⏩ Skipped: ${#SKP_FILS[@]}"
     
+    # Show passworded files summary
+    if [[ "$FLAG_PASSWORDED" == true ]] && [[ -f "$PASSWORDED_LOG" ]]; then
+        local passworded_count=$(grep -c "^Passworded file detected:" "$PASSWORDED_LOG" 2>/dev/null || echo "0")
+        if (( passworded_count > 0 )); then
+            echo "🔐 Passworded files logged: $passworded_count"
+            echo "📋 Passworded files log: $PASSWORDED_LOG"
+        fi
+    fi
+
     if (( PROC_F > 0 )) && [[ ! "$DRY_RUN" == true ]]; then
         echo "📊 Original total size: $(format_size "$O_SIZE")"
         echo "📊 Repacked total size: $(format_size "$REP_SIZE")"
