@@ -38,6 +38,7 @@ autopak/
 │   ├── encryption.sh         # Encryption operations
 │   ├── secure_delete.sh      # Secure file deletion
 │   ├── integrity.sh          # Integrity verification
+│   ├── checksums.sh          # Checksum generation and verification
 │   ├── splitting.sh          # Archive splitting/joining
 │   ├── nested.sh             # Nested archive handling
 │   ├── autodetect.sh         # Smart format detection
