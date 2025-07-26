@@ -1043,8 +1043,9 @@ process_archive() {
         return 0
     fi #1
 
+    # Early password detection for common formats (NOT .exe files)
     local ext_lower=$(echo "$EXT" | tr '[:upper:]' '[:lower:]')
-    if [[ "$ext_lower" =~ ^(zip|rar|7z)$ ]] && is_archive_passworded "$FILE" "$ext_lower"; then
+    if [[ "$ext_lower" =~ ^(zip|rar|7z)$ ]] && [[ ! "$ext_lower" == "exe" ]] && is_archive_passworded "$FILE" "$ext_lower"; then
         if [[ "$SKIP_PASSWORDED" == true ]]; then
             log_passworded_file "$FILE" "Archive detected as password-protected"
             [[ ! "$QUIET" == true ]] && echo "⏩ Skipping passworded: $(basename "$FILE")"
@@ -1075,7 +1076,7 @@ process_archive() {
         return 0
     fi #1
     
-    if [[ -n "$EXCL_PAT" ]] && [[ "$BASENAME" =~ $EXCL_PAT ]]; then
+    if [[ -n "$EXCL_PAT" ]] && [[ "$basename" =~ ${EXCL_PAT,,} ]]; then
         [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (matching exclude pattern): $BASENAME"
         SKP_FILS+=("$FILE")
         return 0
@@ -1185,7 +1186,7 @@ process_archive() {
             # Standard extraction handler for non-multipart archives
 
         case "$EXT" in
-            zip)
+            zip|ZIP)
                 # Try regular extraction first, then encrypted if it fails
                 if ! unzip -qq "$current_file" -d "$TMP_DIR" 2>/dev/null && \
                 ! unzip -j -qq "$current_file" -d "$TMP_DIR" 2>/dev/null && \
@@ -1576,7 +1577,7 @@ process_folder() {
         return 0
     fi #1
 
-    if [[ -n "$EXCL_PAT" ]] && [[ "$BASENAME" =~ $EXCL_PAT ]]; then
+    if [[ -n "$EXCL_PAT" ]] && [[ "$basename" =~ ${EXCL_PAT,,} ]]; then
         [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (matching exclude pattern): $BASENAME"
         SKP_FILS+=("$FOLDER")
         return 0
@@ -1781,7 +1782,7 @@ process_unpack() {
         return 0
     fi
 
-    if [[ -n "$EXCL_PAT" ]] && [[ "$BASENAME" =~ $EXCL_PAT ]]; then
+    if [[ -n "$EXCL_PAT" ]] && [[ "$basename" =~ ${EXCL_PAT,,} ]]; then
         [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (matching exclude pattern): $BASENAME"
         SKP_FILS+=("$ARCHIVE")
         return 0
@@ -2005,20 +2006,20 @@ is_archive_passworded() {
 
     case "$archive_type" in
         zip)
-            # Check for password protection in ZIP
-            if unzip -t "$archive_file" 2>&1 | grep -q "password"; then
+            # More specific password check for ZIP
+            if unzip -t "$archive_file" 2>&1 | grep -q "incorrect password\|need PK compat"; then
                 return 0  # Is passworded
             fi
             ;;
         rar)
-            # Check for password protection in RAR
-            if unrar t "$archive_file" 2>&1 | grep -q "password\|encrypted"; then
+            # More specific password check for RAR
+            if unrar t "$archive_file" 2>&1 | grep -q "password required\|encrypted headers"; then
                 return 0  # Is passworded
             fi
             ;;
         7z)
-            # Check for password protection in 7z
-            if 7z t "$archive_file" 2>&1 | grep -q "password\|Wrong password"; then
+            # More specific password check for 7z
+            if 7z t "$archive_file" 2>&1 | grep -q "Wrong password\|password required"; then
                 return 0  # Is passworded
             fi
             ;;
