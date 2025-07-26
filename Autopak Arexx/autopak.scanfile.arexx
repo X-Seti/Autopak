@@ -1,0 +1,388 @@
+/* AutoPak ARexx Version - File Scanning and Processing Queue */
+/* X-Seti - January25 2025 - AutoPak ARexx Port - Version: 1.0 */
+
+/* File scanning with detailed info gathering */
+scan_files: PROCEDURE EXPOSE TARG_DIR RECURSIVE SC_RLTS. TOT_F O_SIZE SKP_FILS. S_CACHE RESUME QUIET S_TIME C_PHSE MIN_SIZE MAX_SIZE INCL_PAT EXCL_PAT
+C_PHSE = "Scanning files"
+IF ~QUIET THEN SAY "[SCAN] Phase 1: Scanning and analyzing files..."
+
+/* Initialize stems */
+SC_RLTS.0 = 0
+SKP_FILS.0 = 0
+TOT_F = 0
+O_SIZE = 0
+
+/* Check if we have a cached scan */
+IF EXISTS(S_CACHE) & RESUME THEN DO
+   IF ~QUIET THEN SAY "[INFO] Loading cached scan results..."
+   CALL load_scan_cache()
+   RETURN
+END
+
+counter = 0
+scan_start_time = TIME('S')
+
+/* Create temporary file list */
+temp_list = "T:filelist_"||TIME('S')||".tmp"
+
+/* Build file list based on recursion setting */
+IF RECURSIVE THEN
+   list_cmd = "List "||TARG_DIR||" ALL FILES LFORMAT=%N"
+ELSE
+   list_cmd = "List "||TARG_DIR||" FILES LFORMAT=%N"
+
+ADDRESS COMMAND list_cmd||" >"||temp_list
+
+/* Count total files first */
+ADDRESS COMMAND "wc -l "||temp_list||" >T:filecount.tmp"
+CALL OPEN('count', 'T:filecount.tmp', 'R')
+total_found = WORD(READLN('count'), 1)
+CALL CLOSE('count')
+ADDRESS COMMAND "C:Delete T:filecount.tmp >NIL:"
+
+IF ~QUIET THEN SAY "[FILES] Found" total_found "potential archive files"
+
+/* Track processed multi-part archives to avoid duplicates */
+processed_multipart. = ""
+processed_multipart.0 = 0
+
+/* Analyze each file */
+CALL OPEN('files', temp_list, 'R')
+DO UNTIL EOF('files')
+   filename = READLN('files')
+   IF filename = "" THEN ITERATE
+
+   counter = counter + 1
+   filepath = TARG_DIR||"/"||filename
+   basename = FILEPART(filename)
+
+   /* Check if this is actually an archive file */
+   IF ~is_archive_file(filename) THEN DO
+       counter = counter - 1
+       ITERATE
+   END
+
+   file_size = get_file_size(filepath)
+   size_formatted = format_size(file_size)
+
+   IF ~QUIET THEN
+       CALL show_scan_progress(counter, total_found, basename, size_formatted)
+
+   /* Apply filters */
+   should_process = 1
+   skip_reason = ""
+
+   /* Check if this is a multi-part RAR and if we've already processed the set */
+   IF is_multipart_rar(filepath) THEN DO
+       first_part = get_multipart_first_part(filepath)
+
+       /* Check if we've already processed this multi-part set */
+       already_processed = 0
+       DO i = 1 TO processed_multipart.0
+           IF processed_multipart.i = first_part THEN DO
+               already_processed = 1
+               LEAVE
+           END
+       END
+
+       IF already_processed THEN DO
+           should_process = 0
+           skip_reason = "part of already processed multi-part archive"
+       END
+       ELSE IF filepath ~= first_part THEN DO
+           should_process = 0
+           skip_reason = "not first part of multi-part archive"
+       END
+       ELSE DO
+           /* This is the first part of a new multi-part set */
+           processed_multipart.0 = processed_multipart.0 + 1
+           processed_multipart.processed_multipart.0 = first_part
+       END
+   END
+
+   /* Size filtering */
+   IF should_process & MIN_SIZE > 0 & file_size < MIN_SIZE THEN DO
+       should_process = 0
+       skip_reason = "too small"
+   END
+
+   IF should_process & MAX_SIZE > 0 & file_size > MAX_SIZE THEN DO
+       should_process = 0
+       skip_reason = "too large"
+   END
+
+   /* Pattern filtering */
+   IF should_process & INCL_PAT ~= "" THEN DO
+       IF POS(UPPER(INCL_PAT), UPPER(basename)) = 0 THEN DO
+           should_process = 0
+           skip_reason = "doesn't match include pattern"
+       END
+   END
+
+   IF should_process & EXCL_PAT ~= "" THEN DO
+       IF POS(UPPER(EXCL_PAT), UPPER(basename)) > 0 THEN DO
+           should_process = 0
+           skip_reason = "matches exclude pattern"
+       END
+   END
+
+   /* Skip already repacked files */
+   IF should_process & POS("_repacked", basename) > 0 THEN DO
+       should_process = 0
+       skip_reason = "already repacked"
+   END
+
+   /* Check if already processed (resume) */
+   IF should_process & RESUME & is_already_processed(filepath) THEN DO
+       should_process = 0
+       skip_reason = "already processed"
+   END
+
+   /* Store scan result */
+   IF should_process THEN DO
+       SC_RLTS.0 = SC_RLTS.0 + 1
+       SC_RLTS.SC_RLTS.0 = filepath||"|"||file_size||"|process"
+       TOT_F = TOT_F + 1
+       O_SIZE = O_SIZE + file_size
+   END
+   ELSE DO
+       SC_RLTS.0 = SC_RLTS.0 + 1
+       SC_RLTS.SC_RLTS.0 = filepath||"|"||file_size||"|skip|"||skip_reason
+       SKP_FILS.0 = SKP_FILS.0 + 1
+       SKP_FILS.SKP_FILS.0 = filepath
+   END
+END
+CALL CLOSE('files')
+ADDRESS COMMAND "C:Delete "||temp_list||" >NIL:"
+
+/* Cache scan results */
+CALL save_scan_cache()
+
+scan_duration = TIME('S') - scan_start_time
+IF ~QUIET THEN DO
+   SAY ""
+   SAY "[OK] Scan completed in" scan_duration"s"
+   SAY "[STATS] Files to process:" TOT_F
+   SAY "[STATS] Files to skip:" SKP_FILS.0
+   SAY "[STATS] Total size to process:" format_size(O_SIZE)
+END
+
+/* Show scan progress indicator */
+show_scan_progress: PROCEDURE
+ARG current, total, filename, size
+IF total = 0 THEN RETURN
+
+percent = TRUNC((current * 100) / total)
+bar_length = 40
+filled_length = TRUNC((percent * bar_length) / 100)
+
+bar = ""
+DO i = 1 TO filled_length
+   bar = bar || "█"
+END
+DO i = filled_length + 1 TO bar_length
+   bar = bar || "░"
+END
+
+/* Calculate ETA */
+eta_str = ""
+IF current > 0 THEN DO
+   elapsed = TIME('S') - S_TIME
+   IF elapsed > 0 THEN DO
+       rate = TRUNC((current * 1000) / elapsed)
+       IF rate > 0 THEN DO
+           remaining = total - current
+           eta_seconds = TRUNC((remaining * 1000) / rate)
+           eta_min = TRUNC(eta_seconds / 60)
+           eta_sec = eta_seconds // 60
+           eta_str = " ETA:" eta_min"m"eta_sec"s"
+       END
+   END
+END
+
+CALL WRITECH(STDOUT, '15'x)  /* CR */
+CALL WRITECH(STDOUT, "["||bar||"] "||percent||"% ("||current||"/"||total||") Scanning "||filename||" "||size||eta_str)
+
+/* Save scan cache */
+save_scan_cache: PROCEDURE EXPOSE SC_RLTS. TOT_F O_SIZE SKP_FILS. S_CACHE
+CALL OPEN('cache', S_CACHE, 'W')
+CALL WRITELN('cache', "# AutoPak Scan Cache")
+CALL WRITELN('cache', "TOT_F="||TOT_F)
+CALL WRITELN('cache', "O_SIZE="||O_SIZE)
+CALL WRITELN('cache', "SC_RLTS_COUNT="||SC_RLTS.0)
+CALL WRITELN('cache', "SKP_FILS_COUNT="||SKP_FILS.0)
+
+/* Write scan results */
+DO i = 1 TO SC_RLTS.0
+   CALL WRITELN('cache', "SC_RLTS_"||i||"="||SC_RLTS.i)
+END
+
+/* Write skipped files */
+DO i = 1 TO SKP_FILS.0
+   CALL WRITELN('cache', "SKP_FILS_"||i||"="||SKP_FILS.i)
+END
+
+CALL CLOSE('cache')
+
+/* Load scan cache */
+load_scan_cache: PROCEDURE EXPOSE SC_RLTS. TOT_F O_SIZE SKP_FILS. S_CACHE
+/* Initialize stems */
+SC_RLTS.0 = 0
+SKP_FILS.0 = 0
+
+CALL OPEN('cache', S_CACHE, 'R')
+DO UNTIL EOF('cache')
+   line = READLN('cache')
+   line = STRIP(line)
+   IF line ~= "" & LEFT(line, 1) ~= "#" THEN DO
+       PARSE VAR line var_name '=' var_value
+       var_name = STRIP(var_name)
+       var_value = STRIP(var_value)
+
+       SELECT
+           WHEN var_name = "TOT_F" THEN TOT_F = var_value
+           WHEN var_name = "O_SIZE" THEN O_SIZE = var_value
+           WHEN var_name = "SC_RLTS_COUNT" THEN SC_RLTS.0 = var_value
+           WHEN var_name = "SKP_FILS_COUNT" THEN SKP_FILS.0 = var_value
+           WHEN LEFT(var_name, 8) = "SC_RLTS_" THEN DO
+               index = SUBSTR(var_name, 9)
+               SC_RLTS.index = var_value
+           END
+           WHEN LEFT(var_name, 9) = "SKP_FILS_" THEN DO
+               index = SUBSTR(var_name, 10)
+               SKP_FILS.index = var_value
+           END
+           OTHERWISE NOP
+       END
+   END
+END
+CALL CLOSE('cache')
+
+/* Build processing queue from scan results */
+build_processing_queue: PROCEDURE EXPOSE SC_RLTS. PROCESSING_QUEUE.
+PROCESSING_QUEUE.0 = 0
+
+DO i = 1 TO SC_RLTS.0
+   PARSE VAR SC_RLTS.i filepath '|' filesize '|' action '|' reason
+   IF action = "process" THEN DO
+       PROCESSING_QUEUE.0 = PROCESSING_QUEUE.0 + 1
+       PROCESSING_QUEUE.PROCESSING_QUEUE.0 = filepath
+   END
+END
+
+/* Advanced file pattern matching for archives */
+is_archive_extension: PROCEDURE
+ARG filename
+upper_name = UPPER(filename)
+
+/* Direct extension matches */
+simple_exts = ".ZIP .RAR .7Z .EXE .TAR .GZ .XZ .BZ2 .LZ .LZH .LHA .CAB .ISO .IMG .DD .DEB .PKG .PAC .PP .ACE .ARJ .Z"
+DO i = 1 TO WORDS(simple_exts)
+   ext = WORD(simple_exts, i)
+   IF RIGHT(upper_name, LENGTH(ext)) = ext THEN RETURN 1
+END
+
+/* Compound extensions */
+compound_exts = ".TAR.GZ .TAR.BZ2 .TAR.XZ .TAR.ZST .TGZ"
+DO i = 1 TO WORDS(compound_exts)
+   ext = WORD(compound_exts, i)
+   IF RIGHT(upper_name, LENGTH(ext)) = ext THEN RETURN 1
+END
+
+/* Multi-part patterns */
+IF POS('.PART', upper_name) > 0 THEN DO
+   /* Check for .partXX.rar or .partXX */
+   part_pos = POS('.PART', upper_name)
+   after_part = SUBSTR(upper_name, part_pos + 5)
+   /* Simple check for numbers after .part */
+   IF DATATYPE(LEFT(after_part, 2), 'N') | DATATYPE(LEFT(after_part, 3), 'N') THEN RETURN 1
+END
+
+/* .rXX pattern for RAR */
+dot_pos = LASTPOS('.', upper_name)
+IF dot_pos > 0 THEN DO
+   ext = SUBSTR(upper_name, dot_pos + 1)
+   IF LEFT(ext, 1) = 'R' & LENGTH(ext) >= 2 & LENGTH(ext) <= 4 THEN DO
+       suffix = SUBSTR(ext, 2)
+       IF DATATYPE(suffix, 'N') THEN RETURN 1
+   END
+END
+
+RETURN 0
+
+/* Enhanced archive file detection */
+is_archive_file: PROCEDURE
+ARG filename
+/* First check extension */
+IF is_archive_extension(filename) THEN RETURN 1
+
+/* Additional heuristics could go here */
+/* For now, rely on extension matching */
+RETURN 0
+
+/* Check if file has been processed in previous run */
+is_already_processed: PROCEDURE EXPOSE RSME_FIL
+ARG filepath
+IF ~EXISTS(RSME_FIL) THEN RETURN 0
+
+CALL OPEN('resume', RSME_FIL, 'R')
+DO UNTIL EOF('resume')
+   line = READLN('resume')
+   IF STRIP(line) = filepath THEN DO
+       CALL CLOSE('resume')
+       RETURN 1
+   END
+END
+CALL CLOSE('resume')
+RETURN 0
+
+/* Get total file count for progress calculation */
+get_file_count: PROCEDURE
+ARG directory, recursive
+temp_count = "T:count_"||TIME('S')||".tmp"
+
+IF recursive THEN
+   count_cmd = "List "||directory||" ALL FILES >T:temp_files.tmp && wc -l T:temp_files.tmp"
+ELSE
+   count_cmd = "List "||directory||" FILES >T:temp_files.tmp && wc -l T:temp_files.tmp"
+
+ADDRESS COMMAND count_cmd||" >"||temp_count
+
+count = 0
+IF EXISTS(temp_count) THEN DO
+   CALL OPEN('cnt', temp_count, 'R')
+   IF ~EOF('cnt') THEN
+       count = WORD(READLN('cnt'), 1)
+   CALL CLOSE('cnt')
+   ADDRESS COMMAND "C:Delete "||temp_count||" >NIL:"
+END
+
+ADDRESS COMMAND "C:Delete T:temp_files.tmp >NIL:"
+RETURN count
+
+/* Directory traversal with filtering */
+scan_directory: PROCEDURE EXPOSE RECURSIVE
+ARG target_dir, file_list_stem
+file_list_stem.0 = 0
+
+temp_list = "T:dirlist_"||TIME('S')||".tmp"
+
+IF RECURSIVE THEN
+   ADDRESS COMMAND "List "||target_dir||" ALL FILES LFORMAT=%P%N >"||temp_list
+ELSE
+   ADDRESS COMMAND "List "||target_dir||" FILES LFORMAT=%P%N >"||temp_list
+
+IF EXISTS(temp_list) THEN DO
+   CALL OPEN('dirlist', temp_list, 'R')
+   DO UNTIL EOF('dirlist')
+       filepath = READLN('dirlist')
+       IF filepath ~= "" & is_archive_file(FILEPART(filepath)) THEN DO
+           file_list_stem.0 = file_list_stem.0 + 1
+           file_list_stem.file_list_stem.0 = filepath
+       END
+   END
+   CALL CLOSE('dirlist')
+   ADDRESS COMMAND "C:Delete "||temp_list||" >NIL:"
+END
+
+RETURN file_list_stem.0

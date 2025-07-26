@@ -1,0 +1,302 @@
+/* AutoPak ARexx Version - Configuration and System Management */
+/* X-Seti - January25 2025 - AutoPak ARexx Port - Version: 1.0 */
+
+/* Configuration management functions */
+load_config: PROCEDURE EXPOSE ARC_R COPN_LVL PAR_JOBS VFY_ARCS BUP_ORG CPU_LIMIT NICE_LVL EXT_MULP REP_CRPT KP_BRKF CONF_F QUIET
+IF EXISTS(CONF_F) THEN DO
+   CALL OPEN('config', CONF_F, 'R')
+   DO UNTIL EOF('config')
+       line = READLN('config')
+       line = STRIP(line)
+       IF line ~= "" & LEFT(line, 1) ~= "#" THEN DO
+           PARSE VAR line var_name '=' var_value
+           var_name = STRIP(var_name)
+           var_value = STRIP(var_value, 'B', '"')  /* Remove quotes */
+
+           SELECT
+               WHEN var_name = "ARC_R" THEN ARC_R = var_value
+               WHEN var_name = "COPN_LVL" THEN COPN_LVL = var_value
+               WHEN var_name = "PAR_JOBS" THEN PAR_JOBS = var_value
+               WHEN var_name = "VFY_ARCS" THEN VFY_ARCS = (var_value = "1")
+               WHEN var_name = "BUP_ORG" THEN BUP_ORG = (var_value = "1")
+               WHEN var_name = "CPU_LIMIT" THEN CPU_LIMIT = var_value
+               WHEN var_name = "NICE_LVL" THEN NICE_LVL = var_value
+               WHEN var_name = "EXT_MULP" THEN EXT_MULP = (var_value = "1")
+               WHEN var_name = "REP_CRPT" THEN REP_CRPT = (var_value = "1")
+               WHEN var_name = "KP_BRKF" THEN KP_BRKF = (var_value = "1")
+               OTHERWISE NOP
+           END
+       END
+   END
+   CALL CLOSE('config')
+   IF ~QUIET THEN SAY "[INFO] Loaded config from:" CONF_F
+END
+
+save_config: PROCEDURE EXPOSE ARC_R COPN_LVL PAR_JOBS VFY_ARCS BUP_ORG CPU_LIMIT NICE_LVL EXT_MULP REP_CRPT KP_BRKF CONF_F
+CALL OPEN('config', CONF_F, 'W')
+CALL WRITELN('config', "# AutoPak Configuration")
+CALL WRITELN('config', 'ARC_R="'||ARC_R||'"')
+CALL WRITELN('config', 'COPN_LVL="'||COPN_LVL||'"')
+CALL WRITELN('config', 'PAR_JOBS='||PAR_JOBS)
+CALL WRITELN('config', 'VFY_ARCS='||VFY_ARCS)
+CALL WRITELN('config', 'BUP_ORG='||BUP_ORG)
+CALL WRITELN('config', 'CPU_LIMIT='||CPU_LIMIT)
+CALL WRITELN('config', 'NICE_LVL='||NICE_LVL)
+CALL WRITELN('config', 'EXT_MULP='||EXT_MULP)
+CALL WRITELN('config', 'REP_CRPT='||REP_CRPT)
+CALL WRITELN('config', 'KP_BRKF='||KP_BRKF)
+CALL CLOSE('config')
+SAY "[BACKUP] Configuration saved to:" CONF_F
+
+/* Dependency checking */
+check_dependencies: PROCEDURE EXPOSE ARC_R QUIET
+missing_deps. = ""
+missing_deps.0 = 0
+optional_deps. = ""
+optional_deps.0 = 0
+
+/* Essential tools */
+essential_tools = "List Copy Delete MakeDir"
+DO i = 1 TO WORDS(essential_tools)
+   tool = WORD(essential_tools, i)
+   ADDRESS COMMAND "C:"||tool||" ? >NIL: 2>&1"
+   IF RC > 5 THEN DO  /* Command not found */
+       missing_deps.0 = missing_deps.0 + 1
+       missing_deps.missing_deps.0 = tool
+   END
+END
+
+/* Archiver-specific dependencies */
+SELECT
+   WHEN ARC_R = "7z" THEN DO
+       ADDRESS COMMAND "C:7z >NIL: 2>&1"
+       IF RC > 5 THEN DO
+           missing_deps.0 = missing_deps.0 + 1
+           missing_deps.missing_deps.0 = "7z"
+       END
+   END
+   WHEN ARC_R = "zip" THEN DO
+       ADDRESS COMMAND "C:zip >NIL: 2>&1"
+       IF RC > 5 THEN DO
+           missing_deps.0 = missing_deps.0 + 1
+           missing_deps.missing_deps.0 = "zip"
+       END
+   END
+   WHEN ARC_R = "zstd" THEN DO
+       ADDRESS COMMAND "C:zstd >NIL: 2>&1"
+       IF RC > 5 THEN DO
+           missing_deps.0 = missing_deps.0 + 1
+           missing_deps.missing_deps.0 = "zstd"
+       END
+   END
+   WHEN ARC_R = "xz" THEN DO
+       ADDRESS COMMAND "C:xz >NIL: 2>&1"
+       IF RC > 5 THEN DO
+           missing_deps.0 = missing_deps.0 + 1
+           missing_deps.missing_deps.0 = "xz"
+       END
+   END
+   OTHERWISE NOP
+END
+
+/* Optional tools for extraction */
+optional_tools = "unrar unzip lha cabextract zstd xz unace arj unarj uncompress tar"
+DO i = 1 TO WORDS(optional_tools)
+   tool = WORD(optional_tools, i)
+   ADDRESS COMMAND "C:"||tool||" >NIL: 2>&1"
+   IF RC > 5 THEN DO
+       optional_deps.0 = optional_deps.0 + 1
+       optional_deps.optional_deps.0 = tool
+   END
+END
+
+IF missing_deps.0 > 0 THEN DO
+   SAY "[ERROR] Missing required dependencies:"
+   DO i = 1 TO missing_deps.0
+       SAY "  • "||missing_deps.i
+   END
+   SAY "Install these tools in C: directory"
+   EXIT 1
+END
+
+IF optional_deps.0 > 0 & ~QUIET THEN DO
+   SAY "[WARN] Optional dependencies missing (some formats may not be supported):"
+   DO i = 1 TO optional_deps.0
+       SAY "  • "||optional_deps.i
+   END
+END
+
+/* Check disk space */
+check_disk_space: PROCEDURE
+ARG target_dir, required_space_mb
+
+/* Get available space using Info command */
+ADDRESS COMMAND "Info "||target_dir||" >T:diskspace.tmp"
+IF RC = 0 THEN DO
+   CALL OPEN('space', 'T:diskspace.tmp', 'R')
+   DO UNTIL EOF('space')
+       line = READLN('space')
+       IF POS('bytes free', line) > 0 THEN DO
+           PARSE VAR line . 'free out of' total_bytes 'bytes' .
+           /* Extract free bytes - this is simplified, real parsing would be more complex */
+           available_mb = TRUNC(total_bytes / 1048576)
+           LEAVE
+       END
+   END
+   CALL CLOSE('space')
+   ADDRESS COMMAND "C:Delete T:diskspace.tmp >NIL:"
+
+   IF available_mb < required_space_mb THEN DO
+       SAY "[ERROR] Insufficient disk space. Required:" required_space_mb"MB, Available:" available_mb"MB"
+       EXIT 1
+   END
+END
+ELSE DO
+   SAY "[WARN] Could not check disk space"
+END
+
+/* Estimate required space */
+estimate_space_needed: PROCEDURE EXPOSE TARG_DIR RECURSIVE PAR_JOBS
+max_size = 0
+current_size = 0
+
+/* Build file list */
+temp_list = "T:filelist_"||TIME('S')||".tmp"
+
+IF RECURSIVE THEN
+   find_cmd = "List "||TARG_DIR||" ALL FILES LFORMAT=%N"
+ELSE
+   find_cmd = "List "||TARG_DIR||" FILES LFORMAT=%N"
+
+ADDRESS COMMAND find_cmd||" >"||temp_list
+
+/* Filter for archive files and find largest */
+CALL OPEN('files', temp_list, 'R')
+DO UNTIL EOF('files')
+   filename = READLN('files')
+   IF is_archive_file(filename) THEN DO
+       current_size = get_file_size(TARG_DIR||"/"||filename)
+       IF current_size > max_size THEN
+           max_size = current_size
+   END
+END
+CALL CLOSE('files')
+ADDRESS COMMAND "C:Delete "||temp_list||" >NIL:"
+
+/* Estimate 150% of largest single file size * parallel jobs */
+estimated_mb = TRUNC((max_size * PAR_JOBS * 15 / 10) / 1048576)
+RETURN estimated_mb
+
+/* Check if filename is an archive */
+is_archive_file: PROCEDURE
+ARG filename
+upper_name = UPPER(filename)
+archive_exts = ".ZIP .RAR .7Z .EXE .TAR .TGZ .TAR.GZ .TAR.BZ2 .TAR.XZ .TAR.ZST .GZ .XZ .BZ2 .LZ .LZH .LHA .CAB .ISO .IMG .DD .DEB .PKG .PAC .PP .ACE .ARJ .Z"
+
+DO i = 1 TO WORDS(archive_exts)
+   ext = WORD(archive_exts, i)
+   IF RIGHT(upper_name, LENGTH(ext)) = ext THEN RETURN 1
+   /* Also check for multi-part patterns */
+   IF POS('.PART', upper_name) > 0 THEN RETURN 1
+   IF POS('.R', upper_name) > 0 & DATATYPE(RIGHT(upper_name, 2), 'N') THEN RETURN 1
+END
+RETURN 0
+
+/* CPU and system setup */
+setup_cpu_limiting: PROCEDURE EXPOSE CPU_LIMIT NICE_LVL QUIET
+/* ARexx doesn't have direct CPU limiting, so this is mostly informational */
+IF CPU_LIMIT > 0 THEN DO
+   IF ~QUIET THEN SAY "[INFO] CPU limiting requested:" CPU_LIMIT"% (not implemented in ARexx)"
+END
+
+IF NICE_LVL ~= 0 THEN DO
+   IF ~QUIET THEN SAY "[INFO] Process priority requested:" NICE_LVL "(not implemented in ARexx)"
+END
+
+/* Signal handling */
+BREAK_C:
+HALT:
+SAY ""
+SAY "[ERROR] Interrupted! Cleaning up..."
+CALL cleanup_and_exit()
+EXIT 130
+
+cleanup_and_exit: PROCEDURE EXPOSE WORK_DIR RSME_FIL S_CACHE S_TIME PROC_F TOT_F C_PHSE
+/* Clean up temporary files and directories */
+IF WORK_DIR ~= "" & EXISTS(WORK_DIR) THEN
+   ADDRESS COMMAND "C:Delete "||WORK_DIR||" ALL >NIL:"
+
+IF EXISTS(RSME_FIL) THEN
+   ADDRESS COMMAND "C:Delete "||RSME_FIL||" >NIL:"
+
+IF EXISTS(S_CACHE) THEN
+   ADDRESS COMMAND "C:Delete "||S_CACHE||" >NIL:"
+
+/* Clean up any temporary files we created */
+ADDRESS COMMAND "C:Delete T:extract#?.log >NIL: 2>&1"
+ADDRESS COMMAND "C:Delete T:compress#?.log >NIL: 2>&1"
+ADDRESS COMMAND "C:Delete T:repair#?.log >NIL: 2>&1"
+ADDRESS COMMAND "C:Delete T:verify#?.log >NIL: 2>&1"
+ADDRESS COMMAND "C:Delete T:filesize#?.tmp >NIL: 2>&1"
+ADDRESS COMMAND "C:Delete T:dircheck#?.tmp >NIL: 2>&1"
+
+/* Show partial statistics if interrupted */
+IF TOT_F > 0 THEN DO
+   end_time = TIME('S')
+   duration = end_time - S_TIME
+   SAY "[TIME] Partial run time:" duration"s"
+   SAY "[STATS] Files processed:" PROC_F"/"TOT_F
+   SAY "[INFO] Current phase:" C_PHSE
+END
+
+/* Help system */
+show_help: PROCEDURE
+SAY "Usage: rx autopak.rexx [OPTIONS] <directory>"
+SAY ""
+SAY "AutoPak - Advanced Archive Repackaging Tool v1.0 (ARexx)"
+SAY ""
+SAY "OPTIONS:"
+SAY "    -r, --recursive          Process directories recursively"
+SAY "    -d, --delete-original    Delete original files after repacking"
+SAY "    -b, --backup-original    Create backup of original files before processing"
+SAY "    -n, --dry-run            Show what would be done without actually doing it"
+SAY "    -q, --quiet              Suppress non-essential output"
+SAY "    -v, --verify             Verify repacked archives before deleting originals"
+SAY "    -j, --jobs N             Number of parallel jobs (default: 1)"
+SAY "    -a, --arch ARCHIVER      Set archiver (7z|zip|zstd|xz|gz|tar) [default: 7z]"
+SAY "    -c, --compression LEVEL  Set compression level (0-9, archiver dependent)"
+SAY "    -c9                      Set compression level 9 (no space)"
+SAY "    -i, --include PATTERN    Include files matching pattern"
+SAY "    -e, --exclude PATTERN    Exclude files matching pattern"
+SAY "    -m, --min-size SIZE      Minimum file size to process (e.g., 1M, 100K)"
+SAY "    -M, --max-size SIZE      Maximum file size to process (e.g., 1G, 500M)"
+SAY "    -R, --resume             Resume from previous interrupted run"
+SAY "    -S, --single-file        Process a single file instead of directory"
+SAY "    -C, --config FILE        Use specific configuration file"
+SAY "    -s, --save-config        Save current options as default configuration"
+SAY "    --cpu-limit PERCENT      Limit CPU usage to percentage (informational only)"
+SAY "    --nice-level N           Set process priority (informational only)"
+SAY "    --scan-only              Only scan files and show what would be processed"
+SAY "    --extract-multipart      Extract multi-part archives to separate folders"
+SAY "    --repair-corrupted       Attempt to repair corrupted RAR files before processing"
+SAY "    --keep-broken-files      Keep broken/partial files during extraction"
+SAY "    --ignore-corruption      Continue processing even if archives are corrupted"
+SAY "    -h, --help               Show this help message"
+SAY ""
+SAY "SIZE FORMATS:"
+SAY "    Sizes can be specified with suffixes: K (KB), M (MB), G (GB)"
+SAY "    Examples: 100K, 50M, 2G"
+SAY ""
+SAY "EXAMPLES:"
+SAY "    rx autopak.rexx Work:archives                    # Basic usage"
+SAY "    rx autopak.rexx -r -d Work:archives              # Recursive, delete originals"
+SAY "    rx autopak.rexx -S Work:archives/file.rar        # Single file"
+SAY "    rx autopak.rexx --arch zip -c6 Work:archives     # Use zip with level 6"
+SAY "    rx autopak.rexx --scan-only Work:archives        # Preview mode"
+SAY ""
+SAY "SUPPORTED FORMATS:"
+SAY "    Input:  zip, rar, 7z, exe, tar, tar.gz, tgz, tar.bz2, tar.xz, tar.zst,"
+SAY "            gz, xz, bz2, lz, lzh, lha, cab, iso, img, dd, deb, pkg, pac, pp,"
+SAY "            ace, arj, z, Z (compress), multi-part RAR (part01.rar, r00/r01, etc.)"
+SAY "    Output: 7z, zip, zstd, xz, gz, tar"
+SAY ""

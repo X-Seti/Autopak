@@ -1,0 +1,47 @@
+/* Replace emoji icons with ASCII text equivalents */
+
+/* In the main program and helper functions, replace: */
+
+/* Progress and status messages */
+"🔍" -> "[SCAN]"
+"📋" -> "[INFO]"
+"✅" -> "[OK]"
+"❌" -> "[ERROR]"
+"⚠️" -> "[WARN]"
+"💡" -> "[TIP]"
+"📁" -> "[FILES]"
+"📊" -> "[STATS]"
+"⏩" -> "[SKIP]"
+"🎯" -> "[TARGET]"
+"🔄" -> "[PROC]"
+"🗑️" -> "[DELETE]"
+"💾" -> "[BACKUP]"
+"📦" -> "[PACK]"
+"🔧" -> "[REPAIR]"
+"🛠️" -> "[BROKEN]"
+"🚫" -> "[IGNORE]"
+"⚡" -> "[JOBS]"
+"📏" -> "[SIZE]"
+"📝" -> "[LOG]"
+"⏱️" -> "[TIME]"
+"➡️" -> "[->]"
+
+/* So the messages become: */
+SAY "[SCAN] Phase 1: Scanning and analyzing files..."
+SAY "[INFO] Loading cached scan results..."
+SAY "[ERROR] Insufficient disk space. Required:" required_space_mb"MB, Available:" available_space"MB"
+SAY "[OK] Scan completed in" duration"s"
+SAY "[FILES] Files to process:" TOT_F
+SAY "[SKIP] Skipping (too small):" basename
+SAY "[TARGET] Single file mode:" FILEPART(TARG_DIR)
+SAY "[PROC] Phase 2: Processing archive files..."
+SAY "[->] Processing:" basename "("||format_size(orig_size)||")"
+SAY "[BACKUP] Created backup:" FILEPART(backup_file)
+SAY "[WARN] Corrupted RAR detected:" basename
+SAY "[REPAIR] Attempting to repair:" basename
+SAY "[OK] RAR repair successful using 'rar r' command"
+SAY "[ERROR] RAR repair failed:" basename
+SAY "[PACK] Repacking to:" FILEPART(new_archive)
+SAY "[STATS] Size:" format_size(orig_size) "->" format_size(new_size) "("||compression_ratio||" compression)"
+SAY "[DELETE] Deleting original:" basename
+SAY "[OK] Done:" basename

@@ -1,0 +1,454 @@
+/* AutoPak ARexx Version - Main Program Structure and Argument Parsing */
+/* X-Seti - January25 2025 - AutoPak ARexx Port - Version: 1.0 */
+
+/* Global Variables */
+RECURSIVE = 0
+DEL_ORG = 0
+ARC_R = "7z"
+TARG_DIR = ""
+DRY_RUN = 0
+QUIET = 0
+PAR_JOBS = 1
+COPN_LVL = ""
+BUP_ORG = 0
+VFY_ARCS = 0
+RESUME = 0
+SINGLE_FILE = 0
+WORK_DIR = "RAM:autopak_tmp_"||TIME('S')
+CONF_F = "S:.autopak.conf"
+INCL_PAT = ""
+EXCL_PAT = ""
+MIN_SIZE = 0
+MAX_SIZE = 0
+CPU_LIMIT = 0
+NICE_LVL = 0
+SCN_ONLY = 0
+EXT_MULP = 0
+REP_CRPT = 0
+KP_BRKF = 0
+IGN_CORR = 0
+
+/* Statistics */
+TOT_F = 0
+PROC_F = 0
+FAIL_F. = ""  /* Stem for failed files */
+SKP_FILS. = ""  /* Stem for skipped files */
+S_TIME = TIME('S')
+O_SIZE = 0
+REP_SIZE = 0
+SC_RLTS. = ""  /* Stem for scan results */
+C_PHSE = ""
+
+/* Log files */
+LOGFILE = "T:autopack_"||DATE('S')||"_"||TIME('S')||".log"
+RSME_FIL = "T:autopak_resume_"||TIME('S')||".state"
+S_CACHE = "T:autopak_scan_"||TIME('S')||".cache"
+
+/* Signal handling setup */
+SIGNAL ON BREAK_C
+SIGNAL ON HALT
+
+/* Main entry point */
+main:
+ARG command_line
+
+CALL load_config()
+CALL parse_arguments(command_line)
+
+/* Handle single file mode */
+IF SINGLE_FILE THEN DO
+   IF ~EXISTS(TARG_DIR) THEN DO
+       SAY "❌ Error: File '"||TARG_DIR||"' doesn't exist or is not accessible"
+       EXIT 1
+   END
+   SAY "🎯 Single file mode:" FILEPART(TARG_DIR)
+   INCL_PAT = "^"||FILEPART(TARG_DIR)||"$"
+   TARG_DIR = LEFT(TARG_DIR, LASTPOS('/', TARG_DIR) - 1)
+   IF TARG_DIR = "" THEN TARG_DIR = ""  /* Current directory */
+END
+
+/* Validate inputs */
+IF TARG_DIR = "" THEN DO
+   SAY "❌ Error: No directory specified"
+   SAY "💡 Usage: rx autopak.rexx [OPTIONS] <directory>"
+   EXIT 1
+END
+
+IF ~EXISTS(TARG_DIR) THEN DO
+   SAY "❌ Error: Directory '"||TARG_DIR||"' doesn't exist or is not accessible"
+   SAY "💡 Please check the path and try again"
+   EXIT 1
+END
+
+/* Validate archiver */
+SELECT
+   WHEN ARC_R = "7z" | ARC_R = "zip" | ARC_R = "zstd" | ARC_R = "xz" | ARC_R = "gz" | ARC_R = "tar" THEN NOP
+   OTHERWISE DO
+       SAY "❌ Invalid archiver:" ARC_R
+       EXIT 2
+   END
+END
+
+CALL check_dependencies()
+CALL setup_cpu_limiting()
+
+/* Create work directory */
+ADDRESS COMMAND "C:MakeDir" WORK_DIR
+
+CALL scan_files()
+
+/* Early exit for scan-only mode */
+IF SCN_ONLY THEN DO
+   SAY ""
+   SAY "📋 Scan Results Summary:"
+   SAY "========================"
+   SAY "📁 Total files found:" (TOT_F + SKP_FILS.0)
+   SAY "✅ Files to process:" TOT_F
+   SAY "⏩ Files to skip:" SKP_FILS.0
+   SAY "📊 Total size to process:" format_size(O_SIZE)
+
+   IF SKP_FILS.0 > 0 & ~QUIET THEN DO
+       SAY ""
+       SAY "⏩ Skipped files:"
+       DO i = 1 TO SKP_FILS.0
+           SAY "  • "||FILEPART(SKP_FILS.i)||" - skipped"
+       END
+   END
+
+   SAY ""
+   SAY "💡 Use without --scan-only to process these files"
+   CALL cleanup_and_exit()
+   EXIT 0
+END
+
+IF TOT_F = 0 THEN DO
+   SAY "❌ No archive files to process after filtering"
+   EXIT 1
+END
+
+/* Check disk space */
+IF ~DRY_RUN THEN DO
+   estimated_space = estimate_space_needed()
+   CALL check_disk_space(TARG_DIR, estimated_space)
+END
+
+/* Display configuration */
+IF ~QUIET THEN DO
+   SAY ""
+   SAY "📋 Processing Configuration:"
+   SAY "============================="
+   SAY "🔍 Target directory:" TARG_DIR
+   SAY "📦 Archiver:" ARC_R
+   SAY "🔄 Recursive:" RECURSIVE
+   SAY "🗑️ Delete original:" DEL_ORG
+   SAY "💾 Backup original:" BUP_ORG
+   SAY "✅ Verify archives:" VFY_ARCS
+   SAY "📁 Extract multi-part:" EXT_MULP
+   SAY "🔧 Repair corrupted:" REP_CRPT
+   SAY "🛠️ Keep broken files:" KP_BRKF
+   SAY "🚫 Ignore corruption:" IGN_CORR
+   SAY "💡 Dry run:" DRY_RUN
+   SAY "🔇 Quiet mode:" QUIET
+   SAY "⚡ Parallel jobs:" PAR_JOBS
+   IF CPU_LIMIT > 0 THEN SAY "🔧 CPU limit:" CPU_LIMIT||"%"
+   IF NICE_LVL ~= 0 THEN SAY "🔧 Nice level:" NICE_LVL
+   IF COPN_LVL ~= "" THEN SAY "📊 Compression level:" COPN_LVL
+   IF INCL_PAT ~= "" THEN SAY "🎯 Include pattern:" INCL_PAT
+   IF EXCL_PAT ~= "" THEN SAY "🚫 Exclude pattern:" EXCL_PAT
+   IF MIN_SIZE > 0 THEN SAY "📏 Min size:" format_size(MIN_SIZE)
+   IF MAX_SIZE > 0 THEN SAY "📏 Max size:" format_size(MAX_SIZE)
+   SAY "📝 Log file:" LOGFILE
+   SAY "📁 Files to process:" TOT_F
+   SAY "📊 Total size:" format_size(O_SIZE)
+   SAY ""
+END
+
+/* Phase 2: Process files */
+C_PHSE = "Processing files"
+IF ~QUIET THEN SAY "🔄 Phase 2: Processing archive files..."
+
+/* Process files sequentially (parallel processing would be complex in ARexx) */
+counter = 0
+DO i = 1 TO SC_RLTS.0
+   /* Parse scan result: file|size|action|reason */
+   PARSE VAR SC_RLTS.i filepath '|' filesize '|' action '|' reason
+   IF action = "process" THEN DO
+       counter = counter + 1
+       result = process_archive(filepath, counter, TOT_F)
+       IF result ~= 0 THEN DO
+           FAIL_F.0 = FAIL_F.0 + 1
+           FAIL_F.FAIL_F.0 = filepath
+       END
+       ELSE
+           PROC_F = PROC_F + 1
+   END
+END
+
+/* Cleanup */
+CALL cleanup_and_exit()
+
+/* Display final statistics */
+end_time = TIME('S')
+duration = end_time - S_TIME
+hours = TRUNC(duration / 3600)
+minutes = TRUNC((duration // 3600) / 60)
+seconds = duration // 60
+
+SAY ""
+SAY "📋 Final Summary:"
+SAY "===================="
+SAY "📁 Total files found:" (TOT_F + SKP_FILS.0)
+SAY "✅ Successfully processed:" PROC_F
+SAY "❌ Failed:" FAIL_F.0
+SAY "⏩ Skipped:" SKP_FILS.0
+
+IF PROC_F > 0 & ~DRY_RUN THEN DO
+   SAY "📊 Original total size:" format_size(O_SIZE)
+   SAY "📊 Repacked total size:" format_size(REP_SIZE)
+   total_ratio = calc_compression_ratio(O_SIZE, REP_SIZE)
+   SAY "📊 Overall compression:" total_ratio
+   space_saved = O_SIZE - REP_SIZE
+   SAY "💾 Space saved:" format_size(space_saved)
+END
+
+time_str = ""
+IF hours > 0 THEN time_str = time_str||hours||"h "
+IF minutes > 0 THEN time_str = time_str||minutes||"m "
+time_str = time_str||seconds||"s"
+SAY "⏱️ Total time:" time_str
+
+IF FAIL_F.0 > 0 THEN DO
+   SAY ""
+   SAY "⚠️ Failed files:"
+   DO i = 1 TO FAIL_F.0
+       SAY "  • "||FILEPART(FAIL_F.i)
+   END
+END
+
+IF SKP_FILS.0 > 0 & ~QUIET THEN DO
+   SAY ""
+   SAY "⏩ Skipped files:"
+   DO i = 1 TO SKP_FILS.0
+       SAY "  • "||FILEPART(SKP_FILS.i)
+   END
+END
+
+SAY ""
+SAY "📝 Complete log saved to:" LOGFILE
+
+/* Exit with error code if any files failed */
+IF FAIL_F.0 > 0 THEN EXIT 1
+EXIT 0
+
+/* Argument parsing function */
+parse_arguments: PROCEDURE EXPOSE RECURSIVE DEL_ORG ARC_R TARG_DIR DRY_RUN QUIET PAR_JOBS COPN_LVL BUP_ORG VFY_ARCS RESUME SINGLE_FILE CONF_F INCL_PAT EXCL_PAT MIN_SIZE MAX_SIZE CPU_LIMIT NICE_LVL SCN_ONLY EXT_MULP REP_CRPT KP_BRKF IGN_CORR
+ARG args
+
+/* Split arguments into array */
+arg_count = 0
+temp_args = args
+DO WHILE temp_args ~= ""
+   PARSE VAR temp_args current_arg temp_args
+   IF current_arg ~= "" THEN DO
+       arg_count = arg_count + 1
+       argv.arg_count = current_arg
+   END
+END
+argv.0 = arg_count
+
+i = 1
+DO WHILE i <= argv.0
+   current_arg = argv.i
+
+   SELECT
+       WHEN current_arg = "-r" | current_arg = "--recursive" THEN
+           RECURSIVE = 1
+
+       WHEN current_arg = "-d" | current_arg = "--delete-original" THEN
+           DEL_ORG = 1
+
+       WHEN current_arg = "-b" | current_arg = "--backup-original" THEN
+           BUP_ORG = 1
+
+       WHEN current_arg = "-n" | current_arg = "--dry-run" THEN
+           DRY_RUN = 1
+
+       WHEN current_arg = "-q" | current_arg = "--quiet" THEN
+           QUIET = 1
+
+       WHEN current_arg = "-v" | current_arg = "--verify" THEN
+           VFY_ARCS = 1
+
+       WHEN current_arg = "-R" | current_arg = "--resume" THEN
+           RESUME = 1
+
+       WHEN current_arg = "-S" | current_arg = "--single-file" THEN
+           SINGLE_FILE = 1
+
+       WHEN current_arg = "--scan-only" THEN
+           SCN_ONLY = 1
+
+       WHEN current_arg = "--extract-multipart" THEN
+           EXT_MULP = 1
+
+       WHEN current_arg = "--repair-corrupted" THEN
+           REP_CRPT = 1
+
+       WHEN current_arg = "--keep-broken-files" THEN
+           KP_BRKF = 1
+
+       WHEN current_arg = "--ignore-corruption" THEN
+           IGN_CORR = 1
+
+       WHEN current_arg = "-j" | current_arg = "--jobs" THEN DO
+           i = i + 1
+           IF i <= argv.0 THEN PAR_JOBS = argv.i
+           ELSE DO
+               SAY "❌ Missing value for" current_arg
+               EXIT 1
+           END
+       END
+
+       WHEN current_arg = "-a" | current_arg = "--arch" THEN DO
+           i = i + 1
+           IF i <= argv.0 THEN ARC_R = argv.i
+           ELSE DO
+               SAY "❌ Missing value for" current_arg
+               EXIT 1
+           END
+       END
+
+       WHEN current_arg = "-c" | current_arg = "--compression" THEN DO
+           i = i + 1
+           IF i <= argv.0 THEN COPN_LVL = argv.i
+           ELSE DO
+               SAY "❌ Missing value for" current_arg
+               EXIT 1
+           END
+       END
+
+       /* Handle -c9 format (no space) */
+       WHEN LEFT(current_arg, 2) = "-c" & LENGTH(current_arg) > 2 THEN DO
+           COPN_LVL = SUBSTR(current_arg, 3)
+       END
+
+       WHEN current_arg = "-i" | current_arg = "--include" THEN DO
+           i = i + 1
+           IF i <= argv.0 THEN INCL_PAT = argv.i
+           ELSE DO
+               SAY "❌ Missing value for" current_arg
+               EXIT 1
+           END
+       END
+
+       WHEN current_arg = "-e" | current_arg = "--exclude" THEN DO
+           i = i + 1
+           IF i <= argv.0 THEN EXCL_PAT = argv.i
+           ELSE DO
+               SAY "❌ Missing value for" current_arg
+               EXIT 1
+           END
+       END
+
+       WHEN current_arg = "-m" | current_arg = "--min-size" THEN DO
+           i = i + 1
+           IF i <= argv.0 THEN MIN_SIZE = parse_size(argv.i)
+           ELSE DO
+               SAY "❌ Missing value for" current_arg
+               EXIT 1
+           END
+       END
+
+       WHEN current_arg = "-M" | current_arg = "--max-size" THEN DO
+           i = i + 1
+           IF i <= argv.0 THEN MAX_SIZE = parse_size(argv.i)
+           ELSE DO
+               SAY "❌ Missing value for" current_arg
+               EXIT 1
+           END
+       END
+
+       WHEN current_arg = "-C" | current_arg = "--config" THEN DO
+           i = i + 1
+           IF i <= argv.0 THEN CONF_F = argv.i
+           ELSE DO
+               SAY "❌ Missing value for" current_arg
+               EXIT 1
+           END
+       END
+
+       WHEN current_arg = "--cpu-limit" THEN DO
+           i = i + 1
+           IF i <= argv.0 THEN DO
+               CPU_LIMIT = argv.i
+               IF ~DATATYPE(CPU_LIMIT, 'W') | CPU_LIMIT < 1 | CPU_LIMIT > 100 THEN DO
+                   SAY "❌ Invalid CPU limit:" CPU_LIMIT "(must be 1-100)"
+                   EXIT 1
+               END
+           END
+           ELSE DO
+               SAY "❌ Missing value for" current_arg
+               EXIT 1
+           END
+       END
+
+       WHEN current_arg = "--nice-level" THEN DO
+           i = i + 1
+           IF i <= argv.0 THEN DO
+               NICE_LVL = argv.i
+               IF ~DATATYPE(NICE_LVL, 'W') | NICE_LVL < -20 | NICE_LVL > 19 THEN DO
+                   SAY "❌ Invalid nice level:" NICE_LVL "(must be -20 to 19)"
+                   EXIT 1
+               END
+           END
+           ELSE DO
+               SAY "❌ Missing value for" current_arg
+               EXIT 1
+           END
+       END
+
+       WHEN current_arg = "-h" | current_arg = "--help" THEN DO
+           CALL show_help()
+           EXIT 0
+       END
+
+       WHEN current_arg = "-s" | current_arg = "--save-config" THEN DO
+           CALL save_config()
+           EXIT 0
+       END
+
+       WHEN LEFT(current_arg, 1) = "-" THEN DO
+           SAY "❌ Unknown option:" current_arg
+           SAY "Use -h or --help for usage information"
+           EXIT 1
+       END
+
+       OTHERWISE DO
+           TARG_DIR = current_arg
+       END
+   END
+
+   i = i + 1
+END
+
+RETURN
+
+/* Parse size argument (K/M/G suffixes) */
+parse_size: PROCEDURE
+ARG size_str
+size_len = LENGTH(size_str)
+IF size_len = 0 THEN RETURN 0
+
+last_char = UPPER(RIGHT(size_str, 1))
+IF DATATYPE(last_char, 'N') THEN
+   RETURN size_str  /* Pure number */
+
+size_num = LEFT(size_str, size_len - 1)
+IF ~DATATYPE(size_num, 'N') THEN RETURN 0
+
+SELECT
+   WHEN last_char = 'K' THEN RETURN size_num * 1024
+   WHEN last_char = 'M' THEN RETURN size_num * 1048576
+   WHEN last_char = 'G' THEN RETURN size_num * 1073741824
+   OTHERWISE RETURN size_str
+END

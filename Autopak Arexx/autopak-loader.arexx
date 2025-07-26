@@ -1,0 +1,388 @@
+/* AutoPak ARexx Loader - Master Script */
+/* X-Seti - January25 2025 - AutoPak ARexx Loader - Version: 1.0 */
+/* This file belongs in root /autopak-loader.arexx - Version: 1 */
+
+/* Master loader script that ties all AutoPak modules together */
+
+/* Module file paths - adjust these if modules are in different locations */
+HELPER_MODULE = "autopak.helper.arexx"
+MAIN_MODULE = "autopak.main.arexx"
+CONF_MODULE = "autopak.conf-man.arexx"
+SCAN_MODULE = "autopak.scanfile.arexx"
+CORE_MODULE = "autopak.arexx"
+
+/* Global variables - shared across all modules */
+RECURSIVE = 0
+DEL_ORG = 0
+ARC_R = "7z"
+TARG_DIR = ""
+DRY_RUN = 0
+QUIET = 0
+PAR_JOBS = 1
+COPN_LVL = ""
+BUP_ORG = 0
+VFY_ARCS = 0
+RESUME = 0
+SINGLE_FILE = 0
+WORK_DIR = "RAM:autopak_tmp_"||TIME('S')
+CONF_F = "S:.autopak.conf"
+INCL_PAT = ""
+EXCL_PAT = ""
+MIN_SIZE = 0
+MAX_SIZE = 0
+CPU_LIMIT = 0
+NICE_LVL = 0
+SCN_ONLY = 0
+EXT_MULP = 0
+REP_CRPT = 0
+KP_BRKF = 0
+IGN_CORR = 0
+
+/* Statistics and progress */
+TOT_F = 0
+PROC_F = 0
+FAIL_F. = ""
+SKP_FILS. = ""
+S_TIME = TIME('S')
+O_SIZE = 0
+REP_SIZE = 0
+SC_RLTS. = ""
+C_PHSE = ""
+PROCESSING_QUEUE. = ""
+
+/* Log files */
+LOGFILE = "T:autopack_"||DATE('S')||"_"||TIME('S')||".log"
+RSME_FIL = "T:autopak_resume_"||TIME('S')||".state"
+S_CACHE = "T:autopak_scan_"||TIME('S')||".cache"
+
+/* Module loading and validation */
+check_module_exists: PROCEDURE
+ARG module_file
+IF ~EXISTS(module_file) THEN DO
+   SAY "[ERROR] Required module not found:" module_file
+   SAY "[TIP] Please ensure all AutoPak modules are in the current directory:"
+   SAY "  • autopak.arexx (core processing)"
+   SAY "  • autopak.helper.arexx (helper functions)"
+   SAY "  • autopak.main.arexx (main program structure)"
+   SAY "  • autopak.conf-man.arexx (configuration management)"
+   SAY "  • autopak.scanfile.arexx (file scanning)"
+   EXIT 1
+END
+RETURN 1
+
+load_module: PROCEDURE
+ARG module_file, module_name
+IF ~QUIET THEN SAY "[INFO] Loading module:" module_name
+CALL check_module_exists(module_file)
+
+/* Load the module by interpreting it */
+INTERPRET "CALL" module_file
+
+RETURN
+
+/* Signal handling setup */
+SIGNAL ON BREAK_C
+SIGNAL ON HALT
+SIGNAL ON ERROR
+SIGNAL ON SYNTAX
+
+/* Main entry point */
+main:
+ARG command_line
+
+/* Display startup banner */
+IF ~QUIET THEN DO
+   SAY "AutoPak - Advanced Archive Repackaging Tool v1.0 (ARexx)"
+   SAY "X-Seti - January 2025"
+   SAY "=================================================="
+   SAY ""
+END
+
+/* Load all required modules */
+IF ~QUIET THEN SAY "[INFO] Loading AutoPak modules..."
+
+/* Load modules in dependency order */
+CALL check_module_exists(HELPER_MODULE)
+CALL check_module_exists(CONF_MODULE)
+CALL check_module_exists(SCAN_MODULE)
+CALL check_module_exists(CORE_MODULE)
+CALL check_module_exists(MAIN_MODULE)
+
+IF ~QUIET THEN SAY "[OK] All modules found"
+
+/* Initialize module functions by calling them from files */
+/* Since ARexx doesn't have true includes, we need to simulate module loading */
+
+/* Call the main program with command line arguments */
+CALL run_autopak(command_line)
+
+EXIT 0
+
+/* Main program runner */
+run_autopak: PROCEDURE EXPOSE RECURSIVE DEL_ORG ARC_R TARG_DIR DRY_RUN QUIET PAR_JOBS COPN_LVL BUP_ORG VFY_ARCS RESUME SINGLE_FILE WORK_DIR CONF_F INCL_PAT EXCL_PAT MIN_SIZE MAX_SIZE CPU_LIMIT NICE_LVL SCN_ONLY EXT_MULP REP_CRPT KP_BRKF IGN_CORR TOT_F PROC_F FAIL_F. SKP_FILS. S_TIME O_SIZE REP_SIZE SC_RLTS. C_PHSE PROCESSING_QUEUE. LOGFILE RSME_FIL S_CACHE
+ARG command_line
+
+/* Load configuration */
+IF EXISTS(CONF_F) THEN DO
+   ADDRESS COMMAND "rx" CONF_MODULE "load_config"
+   IF ~QUIET THEN SAY "[INFO] Configuration loaded"
+END
+
+/* Parse command line arguments */
+ADDRESS COMMAND "rx" MAIN_MODULE "parse_arguments" command_line
+
+/* Handle single file mode */
+IF SINGLE_FILE THEN DO
+   IF ~EXISTS(TARG_DIR) THEN DO
+       SAY "[ERROR] File '"||TARG_DIR||"' doesn't exist or is not accessible"
+       EXIT 1
+   END
+   SAY "[TARGET] Single file mode:" FILEPART(TARG_DIR)
+   INCL_PAT = "^"||FILEPART(TARG_DIR)||"$"
+   TARG_DIR = LEFT(TARG_DIR, LASTPOS('/', TARG_DIR) - 1)
+   IF TARG_DIR = "" THEN TARG_DIR = ""
+END
+
+/* Validate inputs */
+IF TARG_DIR = "" THEN DO
+   SAY "[ERROR] No directory specified"
+   SAY "[TIP] Usage: rx autopak-loader.rexx [OPTIONS] <directory>"
+   ADDRESS COMMAND "rx" MAIN_MODULE "show_help"
+   EXIT 1
+END
+
+IF ~EXISTS(TARG_DIR) THEN DO
+   SAY "[ERROR] Directory '"||TARG_DIR||"' doesn't exist or is not accessible"
+   SAY "[TIP] Please check the path and try again"
+   EXIT 1
+END
+
+/* Validate archiver */
+SELECT
+   WHEN ARC_R = "7z" | ARC_R = "zip" | ARC_R = "zstd" | ARC_R = "xz" | ARC_R = "gz" | ARC_R = "tar" THEN NOP
+   OTHERWISE DO
+       SAY "[ERROR] Invalid archiver:" ARC_R
+       EXIT 2
+   END
+END
+
+/* Check dependencies */
+ADDRESS COMMAND "rx" CONF_MODULE "check_dependencies"
+
+/* Setup system */
+ADDRESS COMMAND "rx" CONF_MODULE "setup_cpu_limiting"
+
+/* Create work directory */
+ADDRESS COMMAND "C:MakeDir" WORK_DIR
+
+/* Scan files */
+ADDRESS COMMAND "rx" SCAN_MODULE "scan_files"
+
+/* Early exit for scan-only mode */
+IF SCN_ONLY THEN DO
+   SAY ""
+   SAY "[INFO] Scan Results Summary:"
+   SAY "========================"
+   SAY "[FILES] Total files found:" (TOT_F + SKP_FILS.0)
+   SAY "[OK] Files to process:" TOT_F
+   SAY "[SKIP] Files to skip:" SKP_FILS.0
+   SAY "[STATS] Total size to process:" format_size(O_SIZE)
+
+   IF SKP_FILS.0 > 0 & ~QUIET THEN DO
+       SAY ""
+       SAY "[SKIP] Skipped files:"
+       DO i = 1 TO SKP_FILS.0
+           SAY "  • "||FILEPART(SKP_FILS.i)||" - skipped"
+       END
+   END
+
+   SAY ""
+   SAY "[TIP] Use without --scan-only to process these files"
+   CALL cleanup_and_exit()
+   EXIT 0
+END
+
+IF TOT_F = 0 THEN DO
+   SAY "[ERROR] No archive files to process after filtering"
+   EXIT 1
+END
+
+/* Check disk space */
+IF ~DRY_RUN THEN DO
+   estimated_space = estimate_space_needed()
+   ADDRESS COMMAND "rx" CONF_MODULE "check_disk_space" TARG_DIR estimated_space
+END
+
+/* Display configuration */
+IF ~QUIET THEN DO
+   SAY ""
+   SAY "[INFO] Processing Configuration:"
+   SAY "============================="
+   SAY "[INFO] Target directory:" TARG_DIR
+   SAY "[INFO] Archiver:" ARC_R
+   SAY "[INFO] Recursive:" RECURSIVE
+   SAY "[INFO] Delete original:" DEL_ORG
+   SAY "[INFO] Backup original:" BUP_ORG
+   SAY "[INFO] Verify archives:" VFY_ARCS
+   SAY "[INFO] Extract multi-part:" EXT_MULP
+   SAY "[INFO] Repair corrupted:" REP_CRPT
+   SAY "[INFO] Keep broken files:" KP_BRKF
+   SAY "[INFO] Ignore corruption:" IGN_CORR
+   SAY "[INFO] Dry run:" DRY_RUN
+   SAY "[INFO] Quiet mode:" QUIET
+   SAY "[INFO] Parallel jobs:" PAR_JOBS
+   IF CPU_LIMIT > 0 THEN SAY "[INFO] CPU limit:" CPU_LIMIT"%"
+   IF NICE_LVL ~= 0 THEN SAY "[INFO] Nice level:" NICE_LVL
+   IF COPN_LVL ~= "" THEN SAY "[INFO] Compression level:" COPN_LVL
+   IF INCL_PAT ~= "" THEN SAY "[INFO] Include pattern:" INCL_PAT
+   IF EXCL_PAT ~= "" THEN SAY "[INFO] Exclude pattern:" EXCL_PAT
+   IF MIN_SIZE > 0 THEN SAY "[INFO] Min size:" format_size(MIN_SIZE)
+   IF MAX_SIZE > 0 THEN SAY "[INFO] Max size:" format_size(MAX_SIZE)
+   SAY "[INFO] Log file:" LOGFILE
+   SAY "[FILES] Files to process:" TOT_F
+   SAY "[STATS] Total size:" format_size(O_SIZE)
+   SAY ""
+END
+
+/* Phase 2: Process files */
+C_PHSE = "Processing files"
+IF ~QUIET THEN SAY "[PROC] Phase 2: Processing archive files..."
+
+/* Build processing queue */
+ADDRESS COMMAND "rx" SCAN_MODULE "build_processing_queue"
+
+/* Process files sequentially */
+counter = 0
+DO i = 1 TO SC_RLTS.0
+   PARSE VAR SC_RLTS.i filepath '|' filesize '|' action '|' reason
+   IF action = "process" THEN DO
+       counter = counter + 1
+       /* Call core processing function */
+       ADDRESS COMMAND "rx" CORE_MODULE "process_archive" filepath counter TOT_F
+       result = RC
+       IF result ~= 0 THEN DO
+           FAIL_F.0 = FAIL_F.0 + 1
+           FAIL_F.FAIL_F.0 = filepath
+       END
+       ELSE
+           PROC_F = PROC_F + 1
+   END
+END
+
+/* Final cleanup and statistics */
+CALL cleanup_and_exit()
+CALL show_final_statistics()
+
+/* Exit with appropriate code */
+IF FAIL_F.0 > 0 THEN EXIT 1
+EXIT 0
+
+/* Cleanup function */
+cleanup_and_exit: PROCEDURE EXPOSE WORK_DIR RSME_FIL S_CACHE S_TIME PROC_F TOT_F C_PHSE
+/* Clean up temporary files and directories */
+IF WORK_DIR ~= "" & EXISTS(WORK_DIR) THEN
+   ADDRESS COMMAND "C:Delete "||WORK_DIR||" ALL >NIL:"
+
+IF EXISTS(RSME_FIL) THEN
+   ADDRESS COMMAND "C:Delete "||RSME_FIL||" >NIL:"
+
+IF EXISTS(S_CACHE) THEN
+   ADDRESS COMMAND "C:Delete "||S_CACHE||" >NIL:"
+
+/* Clean up module temporary files */
+ADDRESS COMMAND "C:Delete T:extract#?.log >NIL: 2>&1"
+ADDRESS COMMAND "C:Delete T:compress#?.log >NIL: 2>&1"
+ADDRESS COMMAND "C:Delete T:repair#?.log >NIL: 2>&1"
+ADDRESS COMMAND "C:Delete T:verify#?.log >NIL: 2>&1"
+ADDRESS COMMAND "C:Delete T:filesize#?.tmp >NIL: 2>&1"
+ADDRESS COMMAND "C:Delete T:dircheck#?.tmp >NIL: 2>&1"
+ADDRESS COMMAND "C:Delete T:filelist#?.tmp >NIL: 2>&1"
+
+RETURN
+
+/* Final statistics display */
+show_final_statistics: PROCEDURE EXPOSE S_TIME PROC_F TOT_F SKP_FILS. FAIL_F. O_SIZE REP_SIZE DRY_RUN QUIET LOGFILE
+end_time = TIME('S')
+duration = end_time - S_TIME
+hours = TRUNC(duration / 3600)
+minutes = TRUNC((duration // 3600) / 60)
+seconds = duration // 60
+
+SAY ""
+SAY "[INFO] Final Summary:"
+SAY "===================="
+SAY "[FILES] Total files found:" (TOT_F + SKP_FILS.0)
+SAY "[OK] Successfully processed:" PROC_F
+SAY "[ERROR] Failed:" FAIL_F.0
+SAY "[SKIP] Skipped:" SKP_FILS.0
+
+IF PROC_F > 0 & ~DRY_RUN THEN DO
+   SAY "[STATS] Original total size:" format_size(O_SIZE)
+   SAY "[STATS] Repacked total size:" format_size(REP_SIZE)
+   total_ratio = calc_compression_ratio(O_SIZE, REP_SIZE)
+   SAY "[STATS] Overall compression:" total_ratio
+   space_saved = O_SIZE - REP_SIZE
+   SAY "[BACKUP] Space saved:" format_size(space_saved)
+END
+
+time_str = ""
+IF hours > 0 THEN time_str = time_str||hours||"h "
+IF minutes > 0 THEN time_str = time_str||minutes||"m "
+time_str = time_str||seconds||"s"
+SAY "[TIME] Total time:" time_str
+
+IF FAIL_F.0 > 0 THEN DO
+   SAY ""
+   SAY "[WARN] Failed files:"
+   DO i = 1 TO FAIL_F.0
+       SAY "  • "||FILEPART(FAIL_F.i)
+   END
+END
+
+IF SKP_FILS.0 > 0 & ~QUIET THEN DO
+   SAY ""
+   SAY "[SKIP] Skipped files:"
+   DO i = 1 TO SKP_FILS.0
+       SAY "  • "||FILEPART(SKP_FILS.i)
+   END
+END
+
+SAY ""
+SAY "[LOG] Complete log saved to:" LOGFILE
+RETURN
+
+/* Helper function stubs - these call the actual functions in helper module */
+format_size: PROCEDURE
+ARG size_bytes
+ADDRESS COMMAND "rx autopak.helper.arexx format_size" size_bytes
+RETURN RESULT
+
+calc_compression_ratio: PROCEDURE
+ARG original, compressed
+ADDRESS COMMAND "rx autopak.helper.arexx calc_compression_ratio" original compressed
+RETURN RESULT
+
+estimate_space_needed: PROCEDURE EXPOSE TARG_DIR RECURSIVE PAR_JOBS
+ADDRESS COMMAND "rx autopak.conf-man.arexx estimate_space_needed"
+RETURN RESULT
+
+/* Signal handlers */
+BREAK_C:
+HALT:
+SAY ""
+SAY "[ERROR] Interrupted! Cleaning up..."
+CALL cleanup_and_exit()
+EXIT 130
+
+ERROR:
+SAY "[ERROR] Runtime error occurred:"
+SAY "  Error" RC "in line" SIGL
+SAY "  " ERRORTEXT(RC)
+CALL cleanup_and_exit()
+EXIT 1
+
+SYNTAX:
+SAY "[ERROR] Syntax error occurred:"
+SAY "  Error" RC "in line" SIGL
+SAY "  " ERRORTEXT(RC)
+EXIT 1

@@ -1,0 +1,728 @@
+/* AutoPak ARexx Version - Process Archive Function */
+/* X-Seti - January25 2025 - AutoPak ARexx Port - Version: 1.0 */
+
+process_archive: PROCEDURE EXPOSE QUIET DRY_RUN DEL_ORG ARC_R COPN_LVL BUP_ORG VFY_ARCS
+ARG archive_file, current_num, total_num
+
+/* Check if already processed (resume functionality) */
+IF resume_check(archive_file) THEN DO
+    IF ~QUIET THEN SAY "⏩ Already processed:" FILEPART(archive_file)
+    RETURN 0
+END
+
+basename = FILEPART(archive_file)
+ext = get_extension(basename)
+stripped_name = get_basename_no_ext(basename)
+temp_dir = "RAM:autopak_tmp_"||TIME('S')||"_"||current_num
+orig_size = get_file_size(archive_file)
+
+/* Size and pattern filtering */
+IF check_size_filters(archive_file) = 0 THEN DO
+    IF ~QUIET THEN SAY "⏩ Skipping (size filter):" basename
+    RETURN 0
+END
+
+IF check_pattern_filters(basename) = 0 THEN DO
+    IF ~QUIET THEN SAY "⏩ Skipping (pattern filter):" basename
+    RETURN 0
+END
+
+/* Skip already repacked files */
+IF POS("_repacked", basename) > 0 THEN DO
+    IF ~QUIET THEN SAY "⏩ Skipping already repacked:" basename
+    RETURN 0
+END
+
+/* Create temp directory */
+ADDRESS COMMAND "C:MakeDir" temp_dir
+
+IF ~QUIET THEN DO
+    CALL show_progress(current_num, total_num, basename)
+    SAY "➡️ Processing:" basename "("||format_size(orig_size)||")"
+END
+
+/* Create backup if requested */
+IF BUP_ORG & ~DRY_RUN THEN DO
+    backup_file = archive_file||".backup"
+    ADDRESS COMMAND "C:Copy" archive_file backup_file
+    IF ~QUIET THEN SAY "💾 Created backup:" FILEPART(backup_file)
+END
+
+/* Handle multi-part archives and repair */
+extract_success = 1
+is_multipart = 0
+repair_attempted = 0
+using_repaired = 0
+current_file = archive_file
+
+/* Check if repair is needed */
+IF REP_CRPT & (UPPER(ext) = "RAR" | is_multipart_rar(archive_file)) THEN DO
+    IF is_rar_corrupted(archive_file) THEN DO
+        IF ~QUIET THEN SAY "⚠️ Corrupted RAR detected:" basename
+        repair_dir = temp_dir||"/repair_temp"
+        ADDRESS COMMAND "C:MakeDir" repair_dir
+        repaired_file = repair_rar_file(archive_file, repair_dir)
+
+        IF repaired_file ~= "" THEN DO
+            IF ~QUIET THEN SAY "✅ Using repaired archive:" FILEPART(repaired_file)
+            current_file = repaired_file
+            repair_attempted = 1
+            using_repaired = 1
+        END
+        ELSE DO
+            IF ~QUIET THEN SAY "❌ RAR repair failed, attempting normal extraction"
+            repair_attempted = 1
+        END
+    END
+END
+
+/* Check for multi-part archives */
+IF is_multipart_rar(current_file) THEN DO
+    is_multipart = 1
+    first_part = get_multipart_first_part(current_file)
+
+    IF EXT_MULP THEN DO
+        /* Extract to separate folder */
+        archive_name = get_basename_no_ext(basename)
+        /* Remove part numbers from folder name */
+        archive_name = remove_part_numbers(archive_name)
+        multipart_folder = temp_dir||"/"||archive_name||"_extracted"
+        ADDRESS COMMAND "C:MakeDir" multipart_folder
+        IF ~QUIET THEN SAY "📁 Extracting multi-part RAR to:" FILEPART(multipart_folder)
+
+        /* Extract using first part */
+        IF KP_BRKF THEN
+            cmd = "C:unrar x -kb -inul" first_part multipart_folder"/ >T:extract.log 2>&1"
+        ELSE
+            cmd = "C:unrar x -inul" first_part multipart_folder"/ >T:extract.log 2>&1"
+
+        ADDRESS COMMAND cmd
+        IF RC ~= 0 THEN DO
+            cmd = "C:7z x -bd -y -o"||multipart_folder first_part ">T:extract7z.log 2>&1"
+            ADDRESS COMMAND cmd
+            IF RC ~= 0 THEN extract_success = 0
+        END
+        temp_dir = multipart_folder
+    END
+    ELSE DO
+        /* Standard extraction */
+        IF ~QUIET THEN SAY "📦 Processing multi-part RAR:" basename
+        IF KP_BRKF THEN
+            cmd = "C:unrar x -kb -inul" first_part temp_dir"/ >T:extract.log 2>&1"
+        ELSE
+            cmd = "C:unrar x -inul" first_part temp_dir"/ >T:extract.log 2>&1"
+
+        ADDRESS COMMAND cmd
+        IF RC ~= 0 THEN DO
+            cmd = "C:7z x -bd -y -o"||temp_dir first_part ">T:extract7z.log 2>&1"
+            ADDRESS COMMAND cmd
+            IF RC ~= 0 THEN extract_success = 0
+        END
+    END
+END
+ELSE DO
+    /* Standard single archive extraction */
+    SELECT
+        WHEN UPPER(ext) = "ZIP" THEN DO
+            cmd = "C:unzip -qq" current_file "-d" temp_dir ">T:extract.log 2>&1"
+            ADDRESS COMMAND cmd
+            IF RC ~= 0 THEN DO
+                cmd = "C:7z x -bd -y -o"||temp_dir current_file ">T:extract7z.log 2>&1"
+                ADDRESS COMMAND cmd
+                IF RC ~= 0 THEN extract_success = 0
+            END
+        END
+
+        WHEN UPPER(ext) = "RAR" THEN DO
+            IF KP_BRKF THEN
+                cmd = "C:unrar x -kb -inul" current_file temp_dir"/ >T:extract.log 2>&1"
+            ELSE
+                cmd = "C:unrar x -inul" current_file temp_dir"/ >T:extract.log 2>&1"
+
+            ADDRESS COMMAND cmd
+            IF RC ~= 0 THEN DO
+                cmd = "C:7z x -bd -y -o"||temp_dir current_file ">T:extract7z.log 2>&1"
+                ADDRESS COMMAND cmd
+                IF RC ~= 0 THEN extract_success = 0
+            END
+        END
+
+        WHEN UPPER(ext) = "7Z" | UPPER(ext) = "EXE" THEN DO
+            cmd = "C:7z x -bd -y -o"||temp_dir archive_file ">T:extract.log 2>&1"
+            ADDRESS COMMAND cmd
+            IF RC ~= 0 THEN extract_success = 0
+        END
+
+        WHEN UPPER(ext) = "TAR" THEN DO
+            cmd = "C:tar -xf" archive_file "-C" temp_dir ">T:extract.log 2>&1"
+            ADDRESS COMMAND cmd
+            IF RC ~= 0 THEN extract_success = 0
+        END
+
+        /* Add more extraction cases for other formats... */
+
+        OTHERWISE DO
+            IF ~QUIET THEN SAY "❓ Unsupported extension:" ext
+            extract_success = 0
+        END
+    END
+END
+
+/* Check extraction success */
+IF ~extract_success THEN DO
+    IF IGN_CORR THEN DO
+        IF ~QUIET THEN SAY "⚠️ Extraction failed but continuing due to --ignore-corruption:" basename
+        CALL cleanup_temp(temp_dir)
+        RETURN 0
+    END
+    ELSE DO
+        IF ~QUIET THEN SAY "❌ Failed to extract:" basename
+        CALL cleanup_temp(temp_dir)
+        RETURN 1
+    END
+END
+
+/* Check if extraction resulted in files */
+IF ~check_temp_has_files(temp_dir) THEN DO
+    IF ~QUIET THEN SAY "❌ Empty archive:" basename
+    CALL cleanup_temp(temp_dir)
+    RETURN 1
+END
+
+/* For multi-part extraction mode, we're done */
+IF EXT_MULP & is_multipart THEN DO
+    IF ~QUIET THEN SAY "✅ Multi-part archive extracted to:" FILEPART(temp_dir)
+    CALL save_resume_state(archive_file)
+    RETURN 0
+END
+
+/* Determine output filename */
+new_archive = generate_output_filename(get_path_no_ext(archive_file), get_output_extension(ARC_R))
+
+IF DRY_RUN THEN DO
+    IF ~QUIET THEN SAY "💡 Would repack:" basename "→" FILEPART(new_archive)
+    IF DEL_ORG & ~QUIET THEN SAY "💡 Would delete original:" basename
+END
+ELSE DO
+    IF ~QUIET THEN SAY "📦 Repacking to:" FILEPART(new_archive)
+    repack_success = 1
+
+    /* Set compression options */
+    comp_opts = ""
+    IF COPN_LVL ~= "" THEN DO
+        SELECT
+            WHEN ARC_R = "7z" THEN comp_opts = "-mx="||COPN_LVL
+            WHEN ARC_R = "zip" THEN comp_opts = "-"||COPN_LVL
+            WHEN ARC_R = "zstd" THEN comp_opts = "-"||COPN_LVL
+            WHEN ARC_R = "xz" THEN comp_opts = "-"||COPN_LVL
+            WHEN ARC_R = "gz" THEN comp_opts = "-"||COPN_LVL
+            OTHERWISE comp_opts = ""
+        END
+    END
+
+    /* Create new archive */
+    SELECT
+        WHEN ARC_R = "7z" THEN DO
+            IF comp_opts = "" THEN comp_opts = "-mx=9"
+            /* Change to temp directory for relative paths */
+            old_dir = PRAGMA('D')
+            ADDRESS COMMAND "C:CD" temp_dir
+            cmd = "C:7z a -t7z" comp_opts "-m0=lzma2" new_archive "* >T:compress.log 2>&1"
+            ADDRESS COMMAND cmd
+            repack_rc = RC
+            ADDRESS COMMAND "C:CD" old_dir
+            IF repack_rc ~= 0 THEN repack_success = 0
+        END
+
+        WHEN ARC_R = "zip" THEN DO
+            IF comp_opts = "" THEN comp_opts = "-9"
+            old_dir = PRAGMA('D')
+            ADDRESS COMMAND "C:CD" temp_dir
+            cmd = "C:zip -r" comp_opts "-q" new_archive "* >T:compress.log 2>&1"
+            ADDRESS COMMAND cmd
+            repack_rc = RC
+            ADDRESS COMMAND "C:CD" old_dir
+            IF repack_rc ~= 0 THEN repack_success = 0
+        END
+
+        /* Add other archiver cases... */
+
+        OTHERWISE DO
+            IF ~QUIET THEN SAY "❌ Unsupported archiver:" ARC_R
+            repack_success = 0
+        END
+    END
+
+    IF ~repack_success THEN DO
+        IF ~QUIET THEN SAY "❌ Failed to repack:" basename
+        CALL cleanup_temp(temp_dir)
+        RETURN 1
+    END
+
+    /* Verify archive if requested */
+    IF VFY_ARCS THEN DO
+        IF ~verify_archive(new_archive, ARC_R) THEN DO
+            IF ~QUIET THEN SAY "❌ Archive verification failed:" FILEPART(new_archive)
+            ADDRESS COMMAND "C:Delete" new_archive
+            CALL cleanup_temp(temp_dir)
+            RETURN 1
+        END
+        IF ~QUIET THEN SAY "✅ Archive verified:" FILEPART(new_archive)
+    END
+
+    /* Calculate compression statistics */
+    new_size = get_file_size(new_archive)
+    compression_ratio = calc_compression_ratio(orig_size, new_size)
+
+    IF ~QUIET THEN SAY "📊 Size:" format_size(orig_size) "→" format_size(new_size) "("||compression_ratio||" compression)"
+
+    /* Handle original file deletion */
+    IF DEL_ORG THEN DO
+        IF ~QUIET THEN SAY "🗑️ Deleting original:" basename
+        ADDRESS COMMAND "C:Delete" archive_file
+
+        /* For multi-part RAR files, delete related parts */
+        IF is_multipart THEN DO
+            CALL delete_multipart_files(archive_file)
+        END
+    END
+END
+
+/* Cleanup */
+CALL cleanup_temp(temp_dir)
+CALL save_resume_state(archive_file)
+
+IF ~QUIET THEN SAY "✅ Done:" basename
+RETURN 0
+
+/* Helper Functions for AutoPak ARexx Version */
+
+/* Get file size in bytes */
+get_file_size: PROCEDURE
+ARG filename
+IF ~EXISTS(filename) THEN RETURN 0
+
+ADDRESS COMMAND "C:List" filename "LFORMAT=%L >T:filesize.tmp"
+IF RC = 0 THEN DO
+   CALL OPEN('sizefile', 'T:filesize.tmp', 'R')
+   IF ~EOF('sizefile') THEN
+       size = READLN('sizefile')
+   ELSE
+       size = 0
+   CALL CLOSE('sizefile')
+   ADDRESS COMMAND "C:Delete T:filesize.tmp >NIL:"
+   RETURN size
+END
+RETURN 0
+
+/* Format file size for display */
+format_size: PROCEDURE
+ARG size_bytes
+IF size_bytes < 1024 THEN
+   RETURN size_bytes||"B"
+ELSE IF size_bytes < 1048576 THEN
+   RETURN TRUNC(size_bytes / 1024)||"KB"
+ELSE IF size_bytes < 1073741824 THEN
+   RETURN TRUNC(size_bytes / 1048576)||"MB"
+ELSE
+   RETURN TRUNC(size_bytes / 1073741824)||"GB"
+
+/* Calculate compression ratio */
+calc_compression_ratio: PROCEDURE
+ARG original, compressed
+IF original = 0 THEN RETURN "0%"
+ratio = 100 - TRUNC((compressed * 100) / original)
+RETURN ratio||"%"
+
+/* Get file extension */
+get_extension: PROCEDURE
+ARG filename
+dot_pos = LASTPOS('.', filename)
+IF dot_pos = 0 THEN RETURN ""
+RETURN SUBSTR(filename, dot_pos + 1)
+
+/* Get basename without extension */
+get_basename_no_ext: PROCEDURE
+ARG filename
+dot_pos = LASTPOS('.', filename)
+IF dot_pos = 0 THEN RETURN filename
+RETURN LEFT(filename, dot_pos - 1)
+
+/* Get path without extension */
+get_path_no_ext: PROCEDURE
+ARG filepath
+dot_pos = LASTPOS('.', filepath)
+IF dot_pos = 0 THEN RETURN filepath
+RETURN LEFT(filepath, dot_pos - 1)
+
+/* Check if file is multipart RAR */
+is_multipart_rar: PROCEDURE
+ARG filename
+basename = FILEPART(filename)
+upper_name = UPPER(basename)
+
+/* Check for .partXX.rar pattern */
+IF POS('.PART', upper_name) > 0 & POS('.RAR', upper_name) > 0 THEN RETURN 1
+
+/* Check for .rXX pattern */
+IF RIGHT(upper_name, 4) = '.RAR' THEN RETURN 0
+dot_pos = LASTPOS('.', upper_name)
+IF dot_pos > 0 THEN DO
+   ext = SUBSTR(upper_name, dot_pos + 1)
+   IF LEFT(ext, 1) = 'R' & DATATYPE(SUBSTR(ext, 2), 'N') THEN RETURN 1
+END
+
+/* Check for .partXX pattern */
+IF POS('.PART', upper_name) > 0 THEN DO
+   part_pos = POS('.PART', upper_name)
+   after_part = SUBSTR(upper_name, part_pos + 5)
+   IF DATATYPE(after_part, 'N') THEN RETURN 1
+END
+
+RETURN 0
+
+/* Get first part of multipart RAR */
+get_multipart_first_part: PROCEDURE
+ARG filename
+filepath = filename
+basename = FILEPART(filename)
+dirname = LEFT(filepath, LENGTH(filepath) - LENGTH(basename))
+upper_name = UPPER(basename)
+
+/* Handle .partXX.rar format */
+IF POS('.PART', upper_name) > 0 & POS('.RAR', upper_name) > 0 THEN DO
+   part_pos = POS('.PART', upper_name)
+   base_name = LEFT(basename, part_pos - 1)
+
+   /* Try different first part names */
+   first_part = dirname||base_name||".part01.rar"
+   IF EXISTS(first_part) THEN RETURN first_part
+
+   first_part = dirname||base_name||".part001.rar"
+   IF EXISTS(first_part) THEN RETURN first_part
+
+   first_part = dirname||base_name||".part0001.rar"
+   IF EXISTS(first_part) THEN RETURN first_part
+
+   first_part = dirname||base_name||".part1.rar"
+   IF EXISTS(first_part) THEN RETURN first_part
+END
+
+/* Handle .rXX format */
+dot_pos = LASTPOS('.', upper_name)
+IF dot_pos > 0 THEN DO
+   ext = SUBSTR(upper_name, dot_pos + 1)
+   IF LEFT(ext, 1) = 'R' & DATATYPE(SUBSTR(ext, 2), 'N') THEN DO
+       base_name = LEFT(basename, dot_pos - 1)
+       first_part = dirname||base_name||".rar"
+       IF EXISTS(first_part) THEN RETURN first_part
+   END
+END
+
+/* Handle .partXX format */
+IF POS('.PART', upper_name) > 0 THEN DO
+   part_pos = POS('.PART', upper_name)
+   base_name = LEFT(basename, part_pos - 1)
+
+   first_part = dirname||base_name||".part01"
+   IF EXISTS(first_part) THEN RETURN first_part
+
+   first_part = dirname||base_name||".part001"
+   IF EXISTS(first_part) THEN RETURN first_part
+
+   first_part = dirname||base_name||".part0001"
+   IF EXISTS(first_part) THEN RETURN first_part
+
+   first_part = dirname||base_name||".part1"
+   IF EXISTS(first_part) THEN RETURN first_part
+END
+
+RETURN filename
+
+/* Check if RAR file is corrupted */
+is_rar_corrupted: PROCEDURE
+ARG rar_file
+
+/* For multipart archives, test the first part */
+IF is_multipart_rar(rar_file) THEN
+   rar_file = get_multipart_first_part(rar_file)
+
+/* Try unrar test */
+ADDRESS COMMAND "C:unrar t" rar_file ">T:rartest.log 2>&1"
+IF RC = 0 THEN DO
+   ADDRESS COMMAND "C:Delete T:rartest.log >NIL:"
+   RETURN 0  /* Not corrupted */
+END
+
+/* Try 7z test */
+ADDRESS COMMAND "C:7z t" rar_file ">T:7ztest.log 2>&1"
+IF RC = 0 THEN DO
+   ADDRESS COMMAND "C:Delete T:7ztest.log >NIL:"
+   RETURN 0  /* Not corrupted */
+END
+
+ADDRESS COMMAND "C:Delete T:rartest.log >NIL:"
+ADDRESS COMMAND "C:Delete T:7ztest.log >NIL:"
+RETURN 1  /* Corrupted */
+
+/* Repair RAR file */
+repair_rar_file: PROCEDURE
+ARG rar_file, repair_dir
+basename = FILEPART(rar_file)
+
+IF ~QUIET THEN SAY "🔧 Attempting to repair:" basename
+
+/* Create repair directory */
+ADDRESS COMMAND "C:MakeDir" repair_dir
+
+/* Method 1: Try WinRAR/RAR repair command */
+repair_output = repair_dir||"/rebuilt."||basename
+ADDRESS COMMAND "C:rar r -y" rar_file repair_output ">T:repair.log 2>&1"
+IF RC = 0 & EXISTS(repair_output) THEN DO
+   IF ~QUIET THEN SAY "✅ RAR repair successful using 'rar r' command"
+   RETURN repair_output
+END
+
+/* Method 2: Try recovery volume reconstruction */
+IF is_multipart_rar(rar_file) THEN DO
+   first_part = get_multipart_first_part(rar_file)
+   dirname = LEFT(rar_file, LASTPOS('/', rar_file))
+
+   /* Check for .rev files */
+   ADDRESS COMMAND "C:List" dirname"#?.rev >T:revcheck.tmp 2>NIL:"
+   CALL OPEN('revfile', 'T:revcheck.tmp', 'R')
+   has_rev = ~EOF('revfile')
+   CALL CLOSE('revfile')
+   ADDRESS COMMAND "C:Delete T:revcheck.tmp >NIL:"
+
+   IF has_rev THEN DO
+       IF ~QUIET THEN SAY "🔄 Found recovery volumes, attempting reconstruction..."
+
+       /* Copy all parts and rev files to repair directory */
+       ADDRESS COMMAND "C:Copy" dirname"#?.part#?.rar" repair_dir"/ >NIL: 2>&1"
+       ADDRESS COMMAND "C:Copy" dirname"#?.r[0-9]#?" repair_dir"/ >NIL: 2>&1"
+       ADDRESS COMMAND "C:Copy" dirname"#?.part[0-9]#?" repair_dir"/ >NIL: 2>&1"
+       ADDRESS COMMAND "C:Copy" dirname"#?.rev" repair_dir"/ >NIL: 2>&1"
+
+       /* Remove corrupted part to force reconstruction */
+       ADDRESS COMMAND "C:Delete" repair_dir"/"||basename ">NIL: 2>&1"
+
+       /* Try reconstruction */
+       repair_first_part = repair_dir"/"||FILEPART(first_part)
+       ADDRESS COMMAND "C:rar rc -y" repair_first_part ">T:reconstruct.log 2>&1"
+
+       reconstructed = repair_dir"/"||basename
+       IF RC = 0 & EXISTS(reconstructed) THEN DO
+           IF ~QUIET THEN SAY "✅ RAR reconstruction successful using recovery volumes"
+           RETURN reconstructed
+       END
+   END
+END
+
+/* Method 3: Try 7-Zip partial extraction */
+temp_extract = repair_dir||"/7z_temp_extract"
+ADDRESS COMMAND "C:MakeDir" temp_extract
+ADDRESS COMMAND "C:7z x -y -o"||temp_extract rar_file ">T:7zextract.log 2>&1"
+
+/* Check if we got any files */
+ADDRESS COMMAND "C:List" temp_extract ">T:extracted.tmp 2>NIL:"
+CALL OPEN('extfile', 'T:extracted.tmp', 'R')
+has_files = ~EOF('extfile')
+CALL CLOSE('extfile')
+ADDRESS COMMAND "C:Delete T:extracted.tmp >NIL:"
+
+IF has_files THEN DO
+   IF ~QUIET THEN SAY "✅ Partial repair successful using 7-Zip extraction"
+   RETURN temp_extract
+END
+
+ADDRESS COMMAND "C:Delete" temp_extract "ALL >NIL:"
+
+IF ~QUIET THEN SAY "❌ RAR repair failed:" basename
+RETURN ""
+
+/* Generate output filename */
+generate_output_filename: PROCEDURE
+ARG base_path, extension
+new_archive = base_path||"_repacked."||extension
+
+IF EXISTS(new_archive) THEN DO
+   i = 1
+   DO WHILE EXISTS(base_path||"_repacked.new"||i||"."||extension)
+       i = i + 1
+   END
+   new_archive = base_path||"_repacked.new"||i||"."||extension
+END
+
+RETURN new_archive
+
+/* Get output extension for archiver */
+get_output_extension: PROCEDURE
+ARG archiver
+SELECT
+   WHEN archiver = "7z" THEN RETURN "7z"
+   WHEN archiver = "zip" THEN RETURN "zip"
+   WHEN archiver = "zstd" THEN RETURN "tar.zst"
+   WHEN archiver = "xz" THEN RETURN "tar.xz"
+   WHEN archiver = "gz" THEN RETURN "tar.gz"
+   WHEN archiver = "tar" THEN RETURN "tar"
+   OTHERWISE RETURN "7z"
+END
+
+/* Verify archive integrity */
+verify_archive: PROCEDURE
+ARG archive, archiver
+SELECT
+   WHEN archiver = "7z" THEN DO
+       ADDRESS COMMAND "C:7z t" archive ">T:verify.log 2>&1"
+       RETURN (RC = 0)
+   END
+   WHEN archiver = "zip" THEN DO
+       ADDRESS COMMAND "C:zip -T" archive ">T:verify.log 2>&1"
+       RETURN (RC = 0)
+   END
+   WHEN archiver = "zstd" | archiver = "xz" | archiver = "gz" | archiver = "tar" THEN DO
+       ADDRESS COMMAND "C:tar -tf" archive ">T:verify.log 2>&1"
+       RETURN (RC = 0)
+   END
+   OTHERWISE RETURN 1  /* Skip verification for unknown formats */
+END
+
+/* Check if temp directory has files */
+check_temp_has_files: PROCEDURE
+ARG temp_dir
+ADDRESS COMMAND "C:List" temp_dir ">T:dircheck.tmp 2>NIL:"
+CALL OPEN('dirfile', 'T:dircheck.tmp', 'R')
+has_files = ~EOF('dirfile')
+CALL CLOSE('dirfile')
+ADDRESS COMMAND "C:Delete T:dircheck.tmp >NIL:"
+RETURN has_files
+
+/* Cleanup temporary directory */
+cleanup_temp: PROCEDURE
+ARG temp_dir
+IF temp_dir ~= "" & EXISTS(temp_dir) THEN
+   ADDRESS COMMAND "C:Delete" temp_dir "ALL >NIL:"
+
+/* Show progress indicator */
+show_progress: PROCEDURE
+ARG current, total, filename
+IF QUIET THEN RETURN
+
+percent = TRUNC((current * 100) / total)
+bar_length = 30
+filled_length = TRUNC((percent * bar_length) / 100)
+
+bar = ""
+DO i = 1 TO filled_length
+   bar = bar || "█"
+END
+DO i = filled_length + 1 TO bar_length
+   bar = bar || "░"
+END
+
+CALL WRITECH(STDOUT, '15'x)  /* CR */
+CALL WRITECH(STDOUT, "["||bar||"] "||percent||"% ("||current||"/"||total||") "||filename)
+
+/* Resume state functions */
+save_resume_state: PROCEDURE
+ARG processed_file
+CALL OPEN('resume', 'T:autopak_resume.state', 'A')
+CALL WRITELN('resume', processed_file)
+CALL CLOSE('resume')
+
+resume_check: PROCEDURE
+ARG filename
+IF ~EXISTS('T:autopak_resume.state') THEN RETURN 0
+
+CALL OPEN('resume', 'T:autopak_resume.state', 'R')
+DO UNTIL EOF('resume')
+   line = READLN('resume')
+   IF line = filename THEN DO
+       CALL CLOSE('resume')
+       RETURN 1
+   END
+END
+CALL CLOSE('resume')
+RETURN 0
+
+/* Size and pattern filter functions */
+check_size_filters: PROCEDURE EXPOSE MIN_SIZE MAX_SIZE
+ARG filename
+file_size = get_file_size(filename)
+
+IF MIN_SIZE > 0 & file_size < MIN_SIZE THEN RETURN 0
+IF MAX_SIZE > 0 & file_size > MAX_SIZE THEN RETURN 0
+RETURN 1
+
+check_pattern_filters: PROCEDURE EXPOSE INCL_PAT EXCL_PAT
+ARG basename
+upper_name = UPPER(basename)
+
+/* Include pattern check */
+IF INCL_PAT ~= "" THEN DO
+   IF POS(UPPER(INCL_PAT), upper_name) = 0 THEN RETURN 0
+END
+
+/* Exclude pattern check */
+IF EXCL_PAT ~= "" THEN DO
+   IF POS(UPPER(EXCL_PAT), upper_name) > 0 THEN RETURN 0
+END
+
+RETURN 1
+
+/* Remove part numbers from archive name */
+remove_part_numbers: PROCEDURE
+ARG archive_name
+upper_name = UPPER(archive_name)
+
+/* Remove .partXX */
+part_pos = POS('.PART', upper_name)
+IF part_pos > 0 THEN
+   archive_name = LEFT(archive_name, part_pos - 1)
+
+/* Remove .rXX */
+dot_pos = LASTPOS('.', upper_name)
+IF dot_pos > 0 THEN DO
+   ext = SUBSTR(upper_name, dot_pos + 1)
+   IF LEFT(ext, 1) = 'R' & DATATYPE(SUBSTR(ext, 2), 'N') THEN
+       archive_name = LEFT(archive_name, dot_pos - 1)
+END
+
+RETURN archive_name
+
+/* Delete multipart files */
+delete_multipart_files: PROCEDURE
+ARG main_file
+dirname = LEFT(main_file, LASTPOS('/', main_file))
+basename = FILEPART(main_file)
+upper_name = UPPER(basename)
+
+/* Handle .partXX.rar format */
+IF POS('.PART', upper_name) > 0 & POS('.RAR', upper_name) > 0 THEN DO
+   part_pos = POS('.PART', upper_name)
+   base_name = LEFT(basename, part_pos - 1)
+   ADDRESS COMMAND "C:Delete" dirname||base_name||".part#?.rar >NIL: 2>&1"
+   IF ~QUIET THEN SAY "🗑️ Deleted multi-part RAR set:" base_name||".part*.rar"
+END
+
+/* Handle .rXX format */
+dot_pos = LASTPOS('.', upper_name)
+IF dot_pos > 0 THEN DO
+   ext = SUBSTR(upper_name, dot_pos + 1)
+   IF ext = "RAR" THEN DO
+       base_name = LEFT(basename, dot_pos - 1)
+       ADDRESS COMMAND "C:Delete" dirname||base_name||".r#? >NIL: 2>&1"
+       IF ~QUIET THEN SAY "🗑️ Deleted multi-part RAR set:" base_name||".r*"
+   END
+END
+
+/* Handle .partXX format */
+IF POS('.PART', upper_name) > 0 THEN DO
+   part_pos = POS('.PART', upper_name)
+   base_name = LEFT(basename, part_pos - 1)
+   ADDRESS COMMAND "C:Delete" dirname||base_name||".part#? >NIL: 2>&1"
+   IF ~QUIET THEN SAY "🗑️ Deleted multi-part set:" base_name||".part*"
+END
+
+
