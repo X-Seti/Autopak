@@ -1,0 +1,88 @@
+# this belongs in root /autopak_help - Version: 1.0
+# X-Seti - July27 2025 - AutoPak Help File - Version: 1.0
+
+AutoPak - Advanced Archive Repackaging Tool v1.0 - X-Seti - March23 2024 - 2025
+
+Usage: autopak.sh [OPTIONS] <directory>
+
+OPTIONS:
+    -r, --recursive          Process directories recursively
+    -d, --delete-original    Delete original files after repacking
+    -b, --backup-original    Create backup of original files before processing
+    -n, --dry-run            Show what would be done without actually doing it
+    -q, --quiet              Suppress non-essential output
+    -v, --verify             Verify repacked archives before deleting originals
+    -j, --jobs N             Number of parallel jobs (default: 1)
+    -a, --arch ARCHIVER      Set archiver (7z|zip|zstd|xz|gz|tar) [default: 7z]
+    -c, --compression LEVEL  Set compression level (0-9, archiver dependent)
+    -i, --include PATTERN    Include files matching pattern
+    -e, --exclude PATTERN    Exclude files matching pattern
+    -m, --min-size SIZE      Minimum file size to process (e.g., 1M, 100K)
+    -M, --max-size SIZE      Maximum file size to process (e.g., 1G, 500M)
+    -R, --resume             Resume from previous interrupted run
+    -C, --config FILE        Use specific configuration file
+    -s, --save-config        Save current options as default configuration
+    -S, --single-file        Process a single file instead of directory
+    -h, --help               Show this help message
+
+    --cpu-limit PERCENT      Limit CPU usage to percentage (10, 50, 90, etc.)
+    --nice-level N           Set process priority (-20 to 19, negative = higher priority)
+    --scan-only              Only scan files and show what would be processed
+    --ignore-processed       Skip files already marked as processed
+    --keep-broken-files      Keep broken/partial files during extraction
+    --repair-corrupted       Attempt to repair corrupted RAR files before processing
+    --ignore-corruption      Continue processing even if archives are corrupted
+    --extract-multipart      Extract multi-part archives to separate folders
+    --unpack-to-folders      Unpack archives to folders instead of repacking
+    --folders-to-archives    Process folders instead of archive files
+    --timeout SECONDS        Timeout for stuck operations (default: 300)
+    --checksum-db FILE       Checksum database file location
+    --generate-checksums     Generate checksum files for completed archives (default)
+    --no-checksums           Don't generate checksum files
+    --use-btrfs-flags        Use BTRFS extended attributes to mark processed files
+    --clear-flags            Clear all autopak processing flags and exit
+    --check-duplicates       Check for duplicate files/archives before processing
+    --cleanup-repacked       Clean up duplicate _repacked filenames and exit
+
+SECURITY & ENCRYPTION:
+    --password-file FILE     Password file for encrypted archives
+    --password-vault FILE    Encrypted password vault file
+    --encrypt-archives       Encrypt created archives with AES-256
+    --secure-delete          Securely overwrite deleted files
+    --skip-passworded        Skip password-protected archives automatically
+    --flag-passworded        Log passworded files for review
+    --passworded-log FILE    Custom log file for passworded archives
+
+SIZE FORMATS:
+    Sizes can be specified with suffixes: K (KB), M (MB), G (GB)
+    Examples: 100K, 50M, 2G
+
+REPAIR AND RECOVERY:
+    --repair-corrupted       Try to repair corrupted RAR files automatically
+    --keep-broken-files      Extract partial data from damaged archives
+    The script can use recovery volumes (.rev files) if available
+    Multiple repair methods: WinRAR repair, 7-Zip extraction, recovery volumes
+
+MULTI-PART RAR SUPPORT:
+    The script automatically detects and handles multi-part RAR archives:
+    - Formats: archive.part01.rar, archive.r000/r001, archive.part1
+    - Only processes the first part, extracts complete archive
+    - Use --extract-multipart to extract to individual folders
+
+EXAMPLES:
+    autopak.sh /path/to/archives                        # Basic usage
+    autopak.sh -r -d -j 4 /path/to/archives             # Recursive, delete, 4 parallel jobs
+    autopak.sh --arch zip --compression 6 /path/to/dir  # Use zip with level 6 compression
+    autopak.sh -i "*.old.*" -e "*.backup.*" /path       # Include/exclude patterns
+    autopak.sh --min-size 1M --max-size 100M /path      # Size filtering
+    autopak.sh --verify --backup-original /path         # Safe mode with verification
+    autopak.sh --cpu-limit 10 --nice-level 10 /path     # Background processing (10% CPU)
+    autopak.sh --extract-multipart /path                # Extract multi-part RARs to folders
+    autopak.sh --scan-only /path                        # Preview what would be processed
+    autopak.sh --resume /path                           # Resume interrupted job
+
+SUPPORTED FORMATS:
+    Input:  zip, rar, 7z, exe, tar, tar.gz, tgz, tar.bz2, tar.xz, tar.zst,
+            gz, xz, bz2, lz, lzh, lha, cab, iso, img, dd, deb, pkg, pac, pp, dmg, pkg, mpkg, sit, sitx, sea
+            ace, arc, arj, z, Z (compress), multi-part RAR (part01.rar, r00/r01, etc.)
+    Output: 7z, zip, zstd, xz, gz, tar

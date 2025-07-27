@@ -1430,31 +1430,61 @@ process_archive() {
     case "$ARC_R" in
         7z)
             if ! create_encrypted_archive "$tmp_dir" "$new_archive" "7z" "${comp_opts:-"-mx=9"}"; then
-                # Fallback to regular archive
+                # Fallback to regular archive with progress
+                show_compression_progress "$new_archive" "7z" &
+                local progress_pid=$!
                 7z a -t7z ${comp_opts:-"-mx=9"} -m0=lzma2 "$new_archive" "$tmp_dir"/* >/dev/null 2>&1 || repack_success=false
+                kill $progress_pid 2>/dev/null
+                wait $progress_pid 2>/dev/null
+                [[ ! "$QUIET" == true ]] && echo -e "\n"
             fi
             ;;
         zip)
             if ! create_encrypted_archive "$tmp_dir" "$new_archive" "zip" "${comp_opts:-"-9"}"; then
-                # Fallback to regular archive
+                # Fallback to regular archive with progress
+                show_compression_progress "$new_archive" "zip" &
+                local progress_pid=$!
                 (cd "$tmp_dir" && zip -r ${comp_opts:-"-9"} -q "$new_archive" * 2>/dev/null) || repack_success=false
+                kill $progress_pid 2>/dev/null
+                wait $progress_pid 2>/dev/null
+                [[ ! "$QUIET" == true ]] && echo -e "\n"
             fi
             ;;
         zstd)
-            # No encryption support for zstd, use regular
+            # No encryption support for zstd, use regular with progress
+            show_compression_progress "$new_archive" "zstd" &
+            local progress_pid=$!
             tar -C "$tmp_dir" -cf - . | zstd ${comp_opts:-"-19"} -T0 -o "$new_archive" 2>/dev/null || repack_success=false
+            kill $progress_pid 2>/dev/null
+            wait $progress_pid 2>/dev/null
+            [[ ! "$QUIET" == true ]] && echo -e "\n"
             ;;
         xz)
-            # No encryption support for xz, use regular
+            # No encryption support for xz, use regular with progress
+            show_compression_progress "$new_archive" "xz" &
+            local progress_pid=$!
             tar -C "$tmp_dir" -cf - . | xz ${comp_opts:-"-9"} -c > "$new_archive" 2>/dev/null || repack_success=false
+            kill $progress_pid 2>/dev/null
+            wait $progress_pid 2>/dev/null
+            [[ ! "$QUIET" == true ]] && echo -e "\n"
             ;;
         gz)
-            # No encryption support for gz, use regular
+            # No encryption support for gz, use regular with progress
+            show_compression_progress "$new_archive" "gz" &
+            local progress_pid=$!
             tar -C "$tmp_dir" -c${comp_opts:-"z"}f "$new_archive" . 2>/dev/null || repack_success=false
+            kill $progress_pid 2>/dev/null
+            wait $progress_pid 2>/dev/null
+            [[ ! "$QUIET" == true ]] && echo -e "\n"
             ;;
         tar)
-            # No encryption support for tar, use regular
+            # No encryption support for tar, use regular with progress
+            show_compression_progress "$new_archive" "tar" &
+            local progress_pid=$!
             tar -C "$tmp_dir" -cf "$new_archive" . 2>/dev/null || repack_success=false
+            kill $progress_pid 2>/dev/null
+            wait $progress_pid 2>/dev/null
+            [[ ! "$QUIET" == true ]] && echo -e "\n"
             ;;
         esac # in "$ARC_R"
 
@@ -1630,25 +1660,55 @@ process_folder() {
         case "$ARC_R" in
             7z)
                 if ! create_encrypted_archive "$(dirname "$folder")" "$new_archive" "7z" "${comp_opts:-"-mx=9"}"; then
+                    show_compression_progress "$new_archive" "7z" &
+                    local progress_pid=$!
                     7z a -t7z ${comp_opts:-"-mx=9"} -m0=lzma2 "$new_archive" "$folder"/* >/dev/null 2>&1 || archive_success=false
+                    kill $progress_pid 2>/dev/null
+                    wait $progress_pid 2>/dev/null
+                    [[ ! "$QUIET" == true ]] && echo -e "\n"
                 fi
                 ;;
             zip)
                 if ! create_encrypted_archive "$(dirname "$folder")" "$new_archive" "zip" "${comp_opts:-"-9"}"; then
+                    show_compression_progress "$new_archive" "zip" &
+                    local progress_pid=$!
                     (cd "$(dirname "$folder")" && zip -r ${comp_opts:-"-9"} -q "$new_archive" "$(basename "$folder")" 2>/dev/null) || archive_success=false
+                    kill $progress_pid 2>/dev/null
+                    wait $progress_pid 2>/dev/null
+                    [[ ! "$QUIET" == true ]] && echo -e "\n"
                 fi
                 ;;
             zstd)
+                show_compression_progress "$new_archive" "zstd" &
+                local progress_pid=$!
                 tar -C "$(dirname "$folder")" -cf - "$(basename "$folder")" | zstd ${comp_opts:-"-19"} -T0 -o "$new_archive" 2>/dev/null || archive_success=false
+                kill $progress_pid 2>/dev/null
+                wait $progress_pid 2>/dev/null
+                [[ ! "$QUIET" == true ]] && echo -e "\n"
                 ;;
             xz)
+                show_compression_progress "$new_archive" "xz" &
+                local progress_pid=$!
                 tar -C "$(dirname "$folder")" -cf - "$(basename "$folder")" | xz ${comp_opts:-"-9"} -c > "$new_archive" 2>/dev/null || archive_success=false
+                kill $progress_pid 2>/dev/null
+                wait $progress_pid 2>/dev/null
+                [[ ! "$QUIET" == true ]] && echo -e "\n"
                 ;;
             gz)
+                show_compression_progress "$new_archive" "gz" &
+                local progress_pid=$!
                 tar -C "$(dirname "$folder")" -c${comp_opts:-"z"}f "$new_archive" "$(basename "$folder")" 2>/dev/null || archive_success=false
+                kill $progress_pid 2>/dev/null
+                wait $progress_pid 2>/dev/null
+                [[ ! "$QUIET" == true ]] && echo -e "\n"
                 ;;
             tar)
+                show_compression_progress "$new_archive" "tar" &
+                local progress_pid=$!
                 tar -C "$(dirname "$folder")" -cf "$new_archive" "$(basename "$folder")" 2>/dev/null || archive_success=false
+                kill $progress_pid 2>/dev/null
+                wait $progress_pid 2>/dev/null
+                [[ ! "$QUIET" == true ]] && echo -e "\n"
                 ;;
         esac # in "$ARC_R"
 
