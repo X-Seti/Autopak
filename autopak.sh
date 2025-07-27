@@ -1,61 +1,60 @@
 #!/bin/bash
-
 # X-Seti - March23 2024 - AutoPak - Archive Repackaging Tool - Version: 1.0
 
 # Default settings
-RECURSIVE=false
-DEL_ORG=false
-ARC_R="7z"
-TARG_DIR=""
-DRY_RUN=false
-QUIET=false
-PAR_JOBS=1
-COPN_LVL=""
-BUP_ORG=false
-VFY_ARCS=false
-RESUME=false
-CONF_F="$HOME/.autopak.conf"
-INCL_PAT=""
-EXCL_PAT=""
-MIN_SIZE=0
-MAX_SIZE=0
-FDRTO_ARCS=false # Process folders instead of archives
-UPKTO_FDR=false
-CPU_LIMIT=0  # 0 = no limit, 10 = 10%, 90 = 90%
-NICE_LVL=0  # Process priority adjustment
-SCN_ONLY=false  # Only scan and report what would be done
-EXT_MULP=false  # Extract multi-part archives to separate folders
-REP_CRPT=false   # Attempt to repair corrupted RAR files before processing
-KP_BRKF=false  # Keep broken/partial files during extraction
-IGN_CORR=false  # Continue processing even if archives are corrupted
-SINGLE_FILE=false
-GEN_CHECKSUMS=true  # Generate checksums for completed archives by default
-USE_BTRFS_FLAGS=false  # Use BTRFS extended attributes to mark processed files
-IGNORE_PROCESSED=false  # Skip files marked as processed
-CLEAR_FLAGS=false  # Clear all autopak processing flags
-TIMEOUT_SECS=300  # Timeout for stuck operations (5 minutes)
-CHECK_DUPLICATES=false  # Check for duplicate files/archives
-CHECKSUM_DB="/tmp/autopak_checksums.db"  # Checksum database
-CLEANUP_REPACKED=false
-EXCLUDE_EXTENSIONS=()
-EXCLUDE_PATTERNS=()
-EXCLUDE_DIRECTORIES=()
+REC=false
+DEL=false
+ARC="7z"
+TDIR=""
+DRY=false
+Q=false
+JOBS=1
+LVL=""
+BUP=false
+VFY=false
+RES=false
+CFG="$HOME/.autopak.conf"
+INCL=""
+EXCL=""
+MINS=0
+MAXS=0
+FDR_ARC=false # Process folders instead of archives
+UNP_FDR=false
+CPU_LIM=0  # 0 = no limit, 10 = 10%, 90 = 90%
+NICE=0  # Process priority adjustment
+SCN=false  # Only scan and report what would be done
+EXT_MP=false  # Extract multi-part archives to separate folders
+REP_CRP=false   # Attempt to repair corrupted RAR files before processing
+KP_BRK=false  # Keep broken/partial files during extraction
+IGN_COR=false  # Continue processing even if archives are corrupted
+SING_FIL=false
+GEN_CSUMS=true  # Generate checksums for completed archives by default
+BTRFS_FLG=false  # Use BTRFS extended attributes to mark processed files
+IGN_PROC=false  # Skip files marked as processed
+CLR_FLGS=false  # Clear all autopak processing flags
+OUTATIME=300  # Timeout for stuck operations (5 minutes)
+CHK_DUPS=false  # Check for duplicate files/archives
+CHKSUM_DB="/tmp/autopak_checksums.db"  # Checksum database
+CLNUP_PKED=false
+EXCL_EXT=()
+EXCL_PATN=()
+EXCL_DIR=()
 
 # Passwords and Encryption
-PASSWORD_FILE=""  # Password file for encrypted archives
-PASSWORD_VAULT=""  # Encrypted password vault file
-MASTER_PASSWORD=""  # Master password for vault
-ENCRYPT_ARCHIVES=false  # Encrypt created archives
-SECURE_DELETE=false  # Securely overwrite deleted files
-SKIP_PASSWORDED=false  # Skip password-protected archives automatically
-FLAG_PASSWORDED=false  # Flag passworded files for review
-PASSWORDED_LOG="/tmp/autopak_passworded_$(date +%Y%m%d_%H%M%S).log"  # Log of skipped passworded files
+PWD_FILE=""  # Password file for encrypted archives
+PWD_VAULT=""  # Encrypted password vault file
+MSTER_PWD=""  # Master password for vault
+ENCRYPT_ARC=false  # Encrypt created archives
+SEC_DEL=false  # Securely overwrite deleted files
+SKP_PWD=false  # Skip password-protected archives automatically
+FLAG_PWD=false  # Flag passworded files for review
+PWD_LOG="/tmp/autopak_passworded_$(date +%Y%m%d_%H%M%S).log"  # Log of skipped passworded files
 
 # Statistics and progress
 TOT_F=0
 PROC_F=0
 FAIL_F=()
-SKP_FILS=()
+SKP_F=()
 F_JOBS=()  # failure tracking
 S_TIME=$(date +%s)
 O_SIZE=0
@@ -65,19 +64,19 @@ C_PHSE=""  # Track current operation phase
 
 # Logging
 LOGFILE="/tmp/autopack_$(date +%Y%m%d_%H%M%S).log"
-RSME_FIL="/tmp/autopak_resume_$(basename "$0")_$$.state"
+RSM_FIL="/tmp/autopak_resume_$(basename "$0")_$$.state"
 S_CACHE="/tmp/autopak_scan_$(basename "$0")_$$.cache"
 CPU_P=""  # PID of cpulimit process if running
 WORK_DIR="$HOME/.autopak_tmp_$$"
 
 # Signal handling
-cleanup_and_exit() {
+cleanup_exit() {
     echo -e "\n🛑 Interrupted! Cleaning up..."
     if [[ -d "$WORK_DIR" ]]; then
         chmod -R 755 "$WORK_DIR" 2>/dev/null
         rm -rf "$WORK_DIR"
     fi #2
-    [[ -f "$RSME_FIL" ]] && rm -f "$RSME_FIL"
+    [[ -f "$RSM_FIL" ]] && rm -f "$RSM_FIL"
     [[ -f "$S_CACHE" ]] && rm -f "$S_CACHE"
 
     # Kill any background CPU limiting processes
@@ -93,64 +92,64 @@ cleanup_and_exit() {
     echo "📋 Current phase: $C_PHSE"
 
     exit 130
-} #closed cleanup_and_exit
+} #closed cleanup_exit
 
-trap cleanup_and_exit INT TERM
+trap cleanup_exit INT TERM
 
 # Load configuration
-load_config() {
-    if [[ -f "$CONF_F" ]]; then
-        source "$CONF_F"
-        [[ ! "$QUIET" == true ]] && echo "📋 Loaded config from: $CONF_F"
+load_cfg() {
+    if [[ -f "$CFG" ]]; then
+        source "$CFG"
+        [[ ! "$Q" == true ]] && echo "📋 Loaded config from: $CFG"
     fi #1
-} #closed load_config
+} #closed load_cfg
 
 # Save configuration
-save_config() {
-    cat > "$CONF_F" << EOF
+save_cfg() {
+    cat > "$CFG" << EOF
 # AutoPak Configuration
-ARC_R="$ARC_R"
-COPN_LVL="$COPN_LVL"
-PAR_JOBS=$PAR_JOBS
-VFY_ARCS=$VFY_ARCS
-BUP_ORG=$BUP_ORG
-CPU_LIMIT=$CPU_LIMIT
-NICE_LVL=$NICE_LVL
-EXT_MULP=$EXT_MULP
-REP_CRPT=$REP_CRPT
-KP_BRKF=$KP_BRKF
+ARC="$ARC"
+LVL="$LVL"
+JOBS=$JOBS
+VFY=$VFY
+BUP=$BUP
+CPU_LIM=$CPU_LIM
+NICE=$NICE
+EXT_MP=$EXT_MP
+REP_CRP=$REP_CRP
+KP_BRK=$KP_BRK
 EOF
-    echo "💾 Configuration saved to: $CONF_F"
-} #closed save_config
+    echo "💾 Configuration saved to: $CFG"
+} #closed save_cfg
 
 # CPU management functions
-setup_cpu_limiting() {
-    if (( CPU_LIMIT > 0 )); then
+setup_cpu() {
+    if (( CPU_LIM > 0 )); then
         if command -v cpulimit &> /dev/null; then
-            [[ ! "$QUIET" == true ]] && echo "🔧 Setting CPU limit to ${CPU_LIMIT}%"
-            cpulimit -l "$CPU_LIMIT" -p $$ &
+            [[ ! "$Q" == true ]] && echo "🔧 Setting CPU limit to ${CPU_LIM}%"
+            cpulimit -l "$CPU_LIM" -p $$ &
             CPU_P=$!
         else
             echo "⚠️ cpulimit not found, CPU limiting disabled"
             echo "Install with: sudo apt-get install cpulimit"
         fi #1
     fi #2
-    
-    if (( NICE_LVL != 0 )); then
-        [[ ! "$QUIET" == true ]] && echo "🔧 Setting process priority (nice level: $NICE_LVL)"
-        renice "$NICE_LVL" $$ >/dev/null 2>&1
+
+    if (( NICE != 0 )); then
+        [[ ! "$Q" == true ]] && echo "🔧 Setting process priority (nice level: $NICE)"
+        renice "$NICE" $$ >/dev/null 2>&1
     fi #1
-} #closed setup_cpu_limiting
+} #closed setup_cpu
 
 # Advanced progress display
-show_detailed_progress() {
+show_prog() {
     local current=$1
     local total=$2
     local filename="$3"
     local operation="$4"
     local size="$5"
 
-    if [[ "$QUIET" == true ]]; then
+    if [[ "$Q" == true ]]; then
         return
     fi #1
 
@@ -187,49 +186,49 @@ show_detailed_progress() {
     printf "\r[$bar] %d%% (%d/%d) %s %s %s%s" \
            "$percent" "$current" "$total" "$operation" \
            "$(basename "$filename")" "$size" "$eta"
-} #closed show_detailed_progress
+} #closed show_prog
 
 # RAR repair functionality
-repair_rar_file() {
+repair_rar() {
     local rar_file="$1"
     local repair_dir="$2"
     local repaired_file=""
-    
-    [[ ! "$QUIET" == true ]] && echo "🔧 Attempting to repair: $(basename "$rar_file")"
-    
+
+    [[ ! "$Q" == true ]] && echo "🔧 Attempting to repair: $(basename "$rar_file")"
+
     # Create repair directory if it doesn't exist
     mkdir -p "$repair_dir"
-    
+
     # Method 1: Try WinRAR/RAR repair command
     if command -v rar &> /dev/null; then
         local repair_output="$repair_dir/rebuilt.$(basename "$rar_file")"
         if rar r -y "$rar_file" "$repair_output" >/dev/null 2>&1; then
             if [[ -f "$repair_output" ]]; then
-                [[ ! "$QUIET" == true ]] && echo "✅ RAR repair successful using 'rar r' command"
+                [[ ! "$Q" == true ]] && echo "✅ RAR repair successful using 'rar r' command"
                 echo "$repair_output"
                 return 0
             fi #3
         fi #2
     fi #1
-    
+
     # Method 2: Try recovery volume reconstruction if .rev files exist
-    if is_multipart_rar "$rar_file"; then
-        local first_part=$(get_multipart_first_part "$rar_file")
+    if is_multipart "$rar_file"; then
+        local first_part=$(get_first_part "$rar_file")
         local dir_name=$(dirname "$first_part")
-        
+
         # Check for .rev files
         if ls "$dir_name"/*.rev &>/dev/null; then
-            [[ ! "$QUIET" == true ]] && echo "🔄 Found recovery volumes, attempting reconstruction..."
-            
+            [[ ! "$Q" == true ]] && echo "🔄 Found recovery volumes, attempting reconstruction..."
+
             # Copy all parts and rev files to repair directory
             cp "$dir_name"/*.part*.rar "$repair_dir"/ 2>/dev/null || true
             cp "$dir_name"/*.r[0-9]* "$repair_dir"/ 2>/dev/null || true
             cp "$dir_name"/*.part[0-9]* "$repair_dir"/ 2>/dev/null || true
             cp "$dir_name"/*.rev "$repair_dir"/ 2>/dev/null || true
-            
+
             # Remove corrupted parts to force reconstruction
             rm -f "$repair_dir/$(basename "$rar_file")" 2>/dev/null
-            
+
             # Try reconstruction
             local repair_first_part="$repair_dir/$(basename "$first_part")"
             if command -v rar &> /dev/null; then
@@ -237,7 +236,7 @@ repair_rar_file() {
                     # Check if the original file was reconstructed
                     local reconstructed="$repair_dir/$(basename "$rar_file")"
                     if [[ -f "$reconstructed" ]]; then
-                        [[ ! "$QUIET" == true ]] && echo "✅ RAR reconstruction successful using recovery volumes"
+                        [[ ! "$Q" == true ]] && echo "✅ RAR reconstruction successful using recovery volumes"
                         echo "$reconstructed"
                         return 0
                     fi #5
@@ -245,54 +244,54 @@ repair_rar_file() {
             fi #3
         fi #2
     fi #1
-    
+
     # Method 3: Try 7-Zip repair (limited capability)
     if command -v 7z &> /dev/null; then
         local temp_extract="$repair_dir/7z_temp_extract"
         mkdir -p "$temp_extract"
-        
+
         # Try to extract what we can with 7z
         if 7z x -y -o"$temp_extract" "$rar_file" >/dev/null 2>&1; then
             # Check if we got any files
             if [[ "$(ls -A "$temp_extract")" ]]; then
-                [[ ! "$QUIET" == true ]] && echo "✅ Partial repair successful using 7-Zip extraction"
+                [[ ! "$Q" == true ]] && echo "✅ Partial repair successful using 7-Zip extraction"
                 echo "$temp_extract"
                 return 0
             fi #3
         fi #2
         rm -rf "$temp_extract"
     fi #1
-    
+
     # Method 4: Force extraction with keep broken files
-    if $KP_BRKF; then
+    if $KP_BRK; then
         local brkext="$repair_dir/brkext"
         mkdir -p "$brkext"
-        
+
         if command -v unrar &> /dev/null; then
             # Try unrar with keep broken files equivalent
             if unrar x -kb -y "$rar_file" "$brkext/" >/dev/null 2>&1; then
                 if [[ "$(ls -A "$brkext")" ]]; then
-                    [[ ! "$QUIET" == true ]] && echo "⚠️ Partial extraction successful (broken files kept)"
+                    [[ ! "$Q" == true ]] && echo "⚠️ Partial extraction successful (broken files kept)"
                     echo "$brkext"
                     return 0
                 fi #4
             fi #3
         fi #2
-        
+
         rm -rf "$brkext"
     fi #1
-    
-    [[ ! "$QUIET" == true ]] && echo "❌ RAR repair failed: $(basename "$rar_file")"
+
+    [[ ! "$Q" == true ]] && echo "❌ RAR repair failed: $(basename "$rar_file")"
     return 1
-} #closed repair_rar_file
+} #closed repair_rar
 
 # Check if RAR file appears corrupted
-is_rar_corrupted() {
+is_corrupt() {
     local rar_file="$1"
 
     # For multi-part archives, test the first part instead of individual parts
-    if is_multipart_rar "$rar_file"; then
-        local first_part=$(get_multipart_first_part "$rar_file")
+    if is_multipart "$rar_file"; then
+        local first_part=$(get_first_part "$rar_file")
         rar_file="$first_part"
     fi #1
 
@@ -311,19 +310,19 @@ is_rar_corrupted() {
     fi #1
 
     return 1  # Not corrupted
-} #closed is_rar_corrupted
+} #closed is_corrupt
 
-is_multipart_rar() {
+is_multipart() {
     local file="$1"
     # Check for various multi-part RAR naming conventions
     if [[ "$file" =~ \.(part[0-9]+\.rar|r[0-9]+)$ ]] || [[ "$file" =~ \.part[0-9]+$ ]]; then
         return 0
     fi #1
     return 1
-} #closed is_multipart_rar
+} #closed is_multipart
 
 # Get the first part of a multi-part RAR archive
-get_multipart_first_part() {
+get_first_part() {
     local file="$1"
     local dir=$(dirname "$file")
     local basename=$(basename "$file")
@@ -352,19 +351,19 @@ get_multipart_first_part() {
     fi #1
 
     echo "$first_part"
-} #closed get_multipart_first_part
+} #closed get_first_part
 
 # File scanning with detailed info gathering
 scan_files() {
     C_PHSE="Scanning files"
-    [[ ! "$QUIET" == true ]] && echo "🔍 Phase 1: Scanning and analyzing files..."
+    [[ ! "$Q" == true ]] && echo "🔍 Phase 1: Scanning and analyzing files..."
 
     # Debug: Show exclude config status
-    [[ ! "$QUIET" == true ]] && echo "🔍 Debug: EXCLUDE_EXTENSIONS has ${#EXCLUDE_EXTENSIONS[@]} items: ${EXCLUDE_EXTENSIONS[*]}"
+    [[ ! "$Q" == true ]] && echo "🔍 Debug: EXCL_EXT has ${#EXCL_EXT[@]} items: ${EXCL_EXT[*]}"
 
     # Check if we have a cached scan
-    if [[ -f "$S_CACHE" ]] && $RESUME; then
-        [[ ! "$QUIET" == true ]] && echo "📋 Loading cached scan results..."
+    if [[ -f "$S_CACHE" ]] && $RES; then
+        [[ ! "$Q" == true ]] && echo "📋 Loading cached scan results..."
         source "$S_CACHE"
         return
     fi #1
@@ -374,17 +373,17 @@ scan_files() {
 
     # Build find options for recursion
     local FIND_OPTS=()
-    $RECURSIVE || FIND_OPTS+=(-maxdepth 1)
+    $REC || FIND_OPTS+=(-maxdepth 1)
 
     # Get all potential files first
     local temp_files=()
     # Get all potential files/folders
     local temp_items=()
 
-    if $FDRTO_ARCS; then
+    if $FDR_ARC; then
         # Find directories, excluding version control and build folders
-        readarray -t temp_items < <(find "$TARG_DIR" "${FIND_OPTS[@]}" -type d \
-            -not -path "$TARG_DIR" \
+        readarray -t temp_items < <(find "$TDIR" "${FIND_OPTS[@]}" -type d \
+            -not -path "$TDIR" \
             -not -name ".*" \
             -not -name "node_modules" \
             -not -name "__pycache__" \
@@ -400,9 +399,9 @@ scan_files() {
             -not -path "*/.bzr" \
             -not -path "*/.bzr/*" \
             -print)
-    elif $UPKTO_FDR; then
+    elif $UNP_FDR; then
         # Find archive files for unpacking
-        readarray -t temp_items < <(find "$TARG_DIR" "${FIND_OPTS[@]}" -type f \( \
+        readarray -t temp_items < <(find "$TDIR" "${FIND_OPTS[@]}" -type f \( \
             -iname '*.zip' -o -iname '*.rar' -o -iname '*.7z' -o -iname '*.exe' -o \
             -iname '*.tar' -o -iname '*.tar.gz' -o -iname '*.tgz' -o -iname '*.tar.bz2' -o \
             -iname '*.tar.xz' -o -iname '*.tar.zst' -o -iname '*.gz' -o -iname '*.xz' -o \
@@ -415,7 +414,7 @@ scan_files() {
             \) -print)
     else
         # Original archive file finding for repacking
-        readarray -t temp_items < <(find "$TARG_DIR" "${FIND_OPTS[@]}" -type f \( \
+        readarray -t temp_items < <(find "$TDIR" "${FIND_OPTS[@]}" -type f \( \
             -iname '*.zip' -o -iname '*.rar' -o -iname '*.7z' -o -iname '*.exe' -o \
             -iname '*.tar' -o -iname '*.tar.gz' -o -iname '*.tgz' -o -iname '*.tar.bz2' -o \
             -iname '*.tar.xz' -o -iname '*.tar.zst' -o -iname '*.gz' -o -iname '*.xz' -o \
@@ -430,14 +429,14 @@ scan_files() {
 
     # CRITICAL FIX: Check if array is empty before processing
     if (( ${#temp_items[@]} == 0 )); then
-        [[ ! "$QUIET" == true ]] && echo "❌ No files found to process"
+        [[ ! "$Q" == true ]] && echo "❌ No files found to process"
         return 1
     fi
 
     local total_found=${#temp_items[@]}
-    [[ ! "$QUIET" == true ]] && echo "📁 Found $total_found potential items"
-    [[ ! "$QUIET" == true ]] && echo "🔍 Debug: Found ${#temp_items[@]} items"
-    [[ ! "$QUIET" == true ]] && printf "  • %s\n" "${temp_items[@]}"
+    [[ ! "$Q" == true ]] && echo "📁 Found $total_found potential items"
+    [[ ! "$Q" == true ]] && echo "🔍 Debug: Found ${#temp_items[@]} items"
+    [[ ! "$Q" == true ]] && printf "  • %s\n" "${temp_items[@]}"
 
     # Track processed multi-part archives to avoid duplicates
     local processed_multipart=()
@@ -449,15 +448,15 @@ scan_files() {
 
         local basename=$(basename "$file")
         local size
-        if $FDRTO_ARCS; then
+        if $FDR_ARC; then
             size=$(du -sb "$file" 2>/dev/null | cut -f1)
             [[ -z "$size" ]] && size=0
         else
-            size=$(get_file_size "$file")
+            size=$(get_size "$file")
         fi #1
-        local size_formatted=$(format_size "$size")
+        local size_formatted=$(fmt_size "$size")
 
-        [[ ! "$QUIET" == true ]] && show_detailed_progress "$counter" "$total_found" "$basename" "Scanning" "$size_formatted"
+        [[ ! "$Q" == true ]] && show_prog "$counter" "$total_found" "$basename" "Scanning" "$size_formatted"
 
         # Apply filters
         local should_process=true
@@ -465,7 +464,7 @@ scan_files() {
 
         # Check exclude extensions first
         local file_ext="${basename##*.}"
-        for exclude_ext in "${EXCLUDE_EXTENSIONS[@]}"; do ##2
+        for exclude_ext in "${EXCL_EXT[@]}"; do ##2
             if [[ "${file_ext,,}" == "${exclude_ext,,}" ]]; then
                 should_process=false
                 skip_reason="excluded extension (.${exclude_ext})"
@@ -475,7 +474,7 @@ scan_files() {
 
         # Check exclude patterns
         if [[ "$should_process" == true ]]; then
-            for exclude_pattern in "${EXCLUDE_PATTERNS[@]}"; do ##2
+            for exclude_pattern in "${EXCL_PATN[@]}"; do ##2
                 if [[ "$basename" == $exclude_pattern ]]; then
                     should_process=false
                     skip_reason="excluded pattern ($exclude_pattern)"
@@ -485,8 +484,8 @@ scan_files() {
         fi #1
 
         # Check if this is a multi-part RAR and if we've already processed the set
-        if [[ "$should_process" == true ]] && is_multipart_rar "$file"; then
-            local first_part=$(get_multipart_first_part "$file")
+        if [[ "$should_process" == true ]] && is_multipart "$file"; then
+            local first_part=$(get_first_part "$file")
 
             # Check if we've already processed this multi-part set
             local already_processed=false
@@ -511,36 +510,36 @@ scan_files() {
 
         # Size filtering
         if [[ "$should_process" == true ]]; then
-            if (( MIN_SIZE > 0 && size < MIN_SIZE )); then
+            if (( MINS > 0 && size < MINS )); then
                 should_process=false
                 skip_reason="too small"
-            elif (( MAX_SIZE > 0 && size > MAX_SIZE )); then
+            elif (( MAXS > 0 && size > MAXS )); then
                 should_process=false
                 skip_reason="too large"
             fi #2
         fi #1
 
         # Pattern filtering
-        if [[ "$should_process" == true && -n "$INCL_PAT" ]] && [[ ! "$basename" =~ $INCL_PAT ]]; then
+        if [[ "$should_process" == true && -n "$INCL" ]] && [[ ! "$basename" =~ $INCL ]]; then
             should_process=false
             skip_reason="doesn't match include pattern"
         fi #1
 
         # Exclude pattern check
-        if [[ "$should_process" == true && -n "$EXCL_PAT" ]] && [[ "$basename" =~ $EXCL_PAT ]]; then
+        if [[ "$should_process" == true && -n "$EXCL" ]] && [[ "$basename" =~ $EXCL ]]; then
             should_process=false
             skip_reason="matches exclude pattern"
         fi #1
 
         # Check if file is already flagged as processed
-        if [[ "$should_process" == true ]] && is_file_flagged "$file"; then
+        if [[ "$should_process" == true ]] && is_flagged "$file"; then
             should_process=false
             skip_reason="already processed (flagged)"
         fi #1
 
         # Skip already repacked files/folders - consolidated check
         if [[ "$should_process" == true ]]; then
-            if $FDRTO_ARCS; then
+            if $FDR_ARC; then
                 # Skip folders that end with _archived
                 if [[ "$basename" =~ _archived$ ]]; then
                     should_process=false
@@ -562,7 +561,7 @@ scan_files() {
         fi #1
 
         # Check if already processed (resume)
-        if [[ "$should_process" == true ]] && $RESUME && is_already_processed "$file"; then
+        if [[ "$should_process" == true ]] && $RES && is_processed "$file"; then
             should_process=false
             skip_reason="already processed"
         fi #1
@@ -574,7 +573,7 @@ scan_files() {
             O_SIZE=$((O_SIZE + size))
         else
             SC_RLTS+=("$file|$size|skip|$skip_reason")
-            SKP_FILS+=("$file")
+            SKP_F+=("$file")
         fi #1
     done ##1
 
@@ -585,49 +584,49 @@ scan_files() {
         echo ")"
         echo "TOT_F=$TOT_F"
         echo "O_SIZE=$O_SIZE"
-        echo "SKP_FILS=("
-        printf "'%s'\n" "${SKP_FILS[@]}"
+        echo "SKP_F=("
+        printf "'%s'\n" "${SKP_F[@]}"
         echo ")"
     } > "$S_CACHE"
 
     local scan_duration=$(($(date +%s) - scan_S_TIME))
-    [[ ! "$QUIET" == true ]] && echo -e "\n✅ Scan completed in ${scan_duration}s"
-    [[ ! "$QUIET" == true ]] && echo "📊 Files to process: $TOT_F"
-    [[ ! "$QUIET" == true ]] && echo "📊 Files to skip: ${#SKP_FILS[@]}"
-    [[ ! "$QUIET" == true ]] && echo "📊 Total size to process: $(format_size "$O_SIZE")"
+    [[ ! "$Q" == true ]] && echo -e "\n✅ Scan completed in ${scan_duration}s"
+    [[ ! "$Q" == true ]] && echo "📊 Files to process: $TOT_F"
+    [[ ! "$Q" == true ]] && echo "📊 Files to skip: ${#SKP_F[@]}"
+    [[ ! "$Q" == true ]] && echo "📊 Total size to process: $(fmt_size "$O_SIZE")"
 } #closed scan_files
 
 # Dependency checking
-check_dependencies() {
+check_deps() {
     local missing_deps=()
     local optional_deps=()
-    
+
     # Essential tools
     for cmd in find tar gzip; do
         if ! command -v "$cmd" &> /dev/null; then
             missing_deps+=("$cmd")
         fi #1
     done ##1
-    
+
     # Archiver-specific dependencies
-    case "$ARC_R" in
+    case "$ARC" in
         7z) [[ ! $(command -v 7z) ]] && missing_deps+=("p7zip-full") ;;
         zip) [[ ! $(command -v zip) ]] && missing_deps+=("zip") ;;
         zstd) [[ ! $(command -v zstd) ]] && missing_deps+=("zstd") ;;
         xz) [[ ! $(command -v xz) ]] && missing_deps+=("xz-utils") ;;
     esac
-    
+
     # Optional tools for extraction
     for cmd in unrar unzip lha cabextract dpkg-deb zstd xz unace arj unarj uncompress; do
         if ! command -v "$cmd" &> /dev/null; then
             optional_deps+=("$cmd")
         fi #1
     done ##1
-    
+
     if (( ${#missing_deps[@]} )); then
         echo "❌ Missing required dependencies:"
         printf "  • %s\n" "${missing_deps[@]}"
-        
+
         # Detect package manager and show appropriate install command
         if command -v apt-get &> /dev/null; then
             echo "Install with: sudo apt-get install ${missing_deps[*]}"
@@ -648,15 +647,15 @@ check_dependencies() {
         fi #2
         exit 1
     fi #1
-    
-    if (( ${#optional_deps[@]} )) && [[ ! "$QUIET" == true ]]; then
+
+    if (( ${#optional_deps[@]} )) && [[ ! "$Q" == true ]]; then
         echo "⚠️ Optional dependencies missing (some formats may not be supported):"
         printf "  • %s\n" "${optional_deps[@]}"
     fi #1
-} #closed check_dependencies
+} #closed check_deps
 
 # Check available disk space
-check_disk_space() {
+check_space() {
     local target_dir="$1"
     local required_space_mb=$2
     
@@ -666,17 +665,17 @@ check_disk_space() {
         echo "❌ Insufficient disk space. Required: ${required_space_mb}MB, Available: ${available_space}MB"
         exit 1
     fi #1
-} #closed check_disk_space
+} #closed check_space
 
 # Estimate required space
-estimate_space_needed() {
+est_space() {
     local total_size=0
     local current_size=0
     local max_size=0
 
     # Build find options for recursion
     local FIND_OPTS=()
-    $RECURSIVE || FIND_OPTS+=(-maxdepth 1)
+    $REC || FIND_OPTS+=(-maxdepth 1)
     
     while IFS= read -r -d '' file; do
         if [[ -f "$file" ]]; then
@@ -686,7 +685,7 @@ estimate_space_needed() {
                 max_size=$current_size
             fi #2
         fi #1
-    done < <(find "$TARG_DIR" "${FIND_OPTS[@]}" -type f \( \
+    done < <(find "$TDIR" "${FIND_OPTS[@]}" -type f \( \
         -iname '*.zip' -o -iname '*.rar' -o -iname '*.7z' -o -iname '*.exe' -o \
         -iname '*.tar' -o -iname '*.tar.gz' -o -iname '*.tgz' -o -iname '*.tar.bz2' -o \
         -iname '*.tar.xz' -o -iname '*.tar.zst' -o -iname '*.gz' -o -iname '*.xz' -o \
@@ -699,8 +698,8 @@ estimate_space_needed() {
     
     # Estimate 150% of original size needed for temporary space
     echo $((total_size * 15 / 10 / 1024 / 1024))
-    echo $((max_size * PAR_JOBS * 15 / 10 / 1024 / 1024))
-} #closed estimate_space_needed
+    echo $((max_size * JOBS * 15 / 10 / 1024 / 1024))
+} #closed est_space
 
 # Progress indicator
 show_progress() {
@@ -708,7 +707,7 @@ show_progress() {
     local total=$2
     local filename="$3"
     
-    if [[ "$QUIET" == true ]]; then
+    if [[ "$Q" == true ]]; then
         return
     fi #1
     
@@ -727,7 +726,7 @@ show_progress() {
 } #closed show_progress
 
 # Verify archive integrity
-verify_archive() {
+verify_arc() {
     local archive="$1"
     local archiver="$2"
     
@@ -737,15 +736,15 @@ verify_archive() {
         zstd|xz|gz|tar) tar -tf "$archive" >/dev/null 2>&1 ;;
         *) return 0 ;;  # Skip verification for unknown formats
     esac
-} #closed verify_archive
+} #closed verify_arc
 
 # Get file size in bytes
-get_file_size() {
+get_size() {
     stat -c%s "$1" 2>/dev/null || echo "0"
-} #closed get_file_size
+} #closed get_size
 
 # Format file size
-format_size() {
+fmt_size() {
     local size=$1
     if (( size < 1024 )); then
         echo "${size}B"
@@ -756,10 +755,10 @@ format_size() {
     else
         echo "$((size / 1073741824))GB"
     fi #1
-} #closed format_size
+} #closed fmt_size
 
 # Calculate compression ratio
-calc_compression_ratio() {
+calc_ratio() {
     local original=$1
     local compressed=$2
     
@@ -770,21 +769,21 @@ calc_compression_ratio() {
     
     local ratio=$((100 - (compressed * 100 / original)))
     echo "${ratio}%"
-} #closed calc_compression_ratio
+} #closed calc_ratio
 
 # Resume functionality
-save_resume_state() {
+save_state() {
     local processed_file="$1"
-    echo "$processed_file" >> "$RSME_FIL"
-} #closed save_resume_state
+    echo "$processed_file" >> "$RSM_FIL"
+} #closed save_state
 
-is_already_processed() {
+is_processed() {
     local file="$1"
-    [[ -f "$RSME_FIL" ]] && grep -Fxq "$file" "$RSME_FIL"
-} #closed is_already_processed
+    [[ -f "$RSM_FIL" ]] && grep -Fxq "$file" "$RSM_FIL"
+} #closed is_processed
 
 # Generate output filename
-generate_output_filename() {
+gen_filename() {
     local base_name="$1"
     local extension="$2"
     local new_archive="${base_name}_repacked.${extension}"
@@ -797,99 +796,107 @@ generate_output_filename() {
         new_archive="${base_name}_repacked.new${i}.${extension}"
     fi #1
     echo "$new_archive"
-} #closed generate_output_filename
+} #closed gen_filename
+
+# Enhanced compression progress with file size monitoring #vers 1
+show_comp_prog() {
+    local output_file="$1"
+    local archiver="$2"
+    local start_time=$(date +%s)
+    
+    if [[ "$Q" == true ]]; then
+        return
+    fi
+
+    echo -n "📦 Compressing with $archiver"
+    
+    while true; do
+        if [[ -f "$output_file" ]]; then
+            local current_size=$(stat -c%s "$output_file" 2>/dev/null || echo "0")
+            local elapsed=$(($(date +%s) - start_time))
+            
+            if (( current_size > 0 )); then
+                local size_mb=$((current_size / 1048576))
+                printf "\r📦 Compressing with $archiver: %dMB (${elapsed}s)" "$size_mb"
+            else
+                printf "\r📦 Compressing with $archiver (${elapsed}s)"
+            fi
+        else
+            local elapsed=$(($(date +%s) - start_time))
+            printf "\r📦 Compressing with $archiver (${elapsed}s)"
+        fi
+        
+        sleep 1
+        
+        # Check if parent process is still running
+        if ! kill -0 $PPID 2>/dev/null; then
+            break
+        fi
+    done
+} #closed show_comp_prog
+
+# Enhanced extraction progress indicator #vers 1  
+show_ext_prog() {
+    local archive_file="$1"
+    local target_dir="$2"
+    local archiver="$3"
+    local start_time=$(date +%s)
+    
+    if [[ "$Q" == true ]]; then
+        return
+    fi
+
+    echo -n "📂 Extracting with $archiver"
+    
+    while true; do
+        if [[ -d "$target_dir" ]]; then
+            local file_count=$(find "$target_dir" -type f 2>/dev/null | wc -l)
+            local elapsed=$(($(date +%s) - start_time))
+            
+            if (( file_count > 0 )); then
+                printf "\r📂 Extracting with $archiver: %d files (${elapsed}s)" "$file_count"
+            else
+                printf "\r📂 Extracting with $archiver (${elapsed}s)"
+            fi
+        else
+            local elapsed=$(($(date +%s) - start_time))
+            printf "\r📂 Extracting with $archiver (${elapsed}s)"
+        fi
+        
+        sleep 1
+        
+        # Check if parent process is still running
+        if ! kill -0 $PPID 2>/dev/null; then
+            break
+        fi
+    done
+} #closed show_ext_prog
+
+# Show archiving progress with dots #vers 1
+show_arc_prog() {
+    local archive_file="$1"
+    local folder="$2"
+
+    if [[ "$Q" == true ]]; then
+        return
+    fi
+
+    echo -n "📦 Archiving"
+    while [[ ! -f "$archive_file" ]] || kill -0 $! 2>/dev/null; do
+        echo -n "."
+        sleep 2
+    done
+    echo " ✅"
+} #closed show_arc_prog
 
 # Help function
-show_help() {
-    cat << EOF
-Usage: $0 [OPTIONS] <directory>
-
-AutoPak - Advanced Archive Repackaging Tool v1.0 - X-Seti - March23 2024 - 2025
-
-OPTIONS:
-    -r, --recursive          Process directories recursively
-    -d, --delete-original    Delete original files after repacking
-    -b, --backup-original    Create backup of original files before processing
-    -n, --dry-run            Show what would be done without actually doing it
-    -q, --quiet              Suppress non-essential output
-    -v, --verify             Verify repacked archives before deleting originals
-    -j, --jobs N             Number of parallel jobs (default: 1)
-    -a, --arch ARCHIVER      Set archiver (7z|zip|zstd|xz|gz|tar) [default: 7z]
-    -c, --compression LEVEL  Set compression level (0-9, archiver dependent)
-    -i, --include PATTERN    Include files matching pattern
-    -e, --exclude PATTERN    Exclude files matching pattern
-    -m, --min-size SIZE      Minimum file size to process (e.g., 1M, 100K)
-    -M, --max-size SIZE      Maximum file size to process (e.g., 1G, 500M)
-    -R, --resume             Resume from previous interrupted run
-    -C, --config FILE        Use specific configuration file
-    -s, --save-config        Save current options as default configuration
-    -S, --single-file        Process a single file instead of directory
-    -h, --help               Show this help message
-
-    --cpu-limit PERCENT      Limit CPU usage to percentage (10, 50, 90, etc.)
-    --nice-level N           Set process priority (-20 to 19, negative = higher priority)
-    --scan-only              Only scan files and show what would be processed
-    --ignore-processed       Skip files already marked as processed
-    --keep-broken-files      Keep broken/partial files during extraction
-    --repair-corrupted       Attempt to repair corrupted RAR files before processing
-    --ignore-corruption      Continue processing even if archives are corrupted
-    --extract-multipart      Extract multi-part archives to separate folders
-    --unpack-to-folders      Unpack archives to folders instead of repacking
-    --folders-to-archives    Process folders instead of archive files
-    --timeout SECONDS        Timeout for stuck operations (default: 300)
-    --checksum-db FILE       Checksum database file location
-    --generate-checksums     Generate checksum files for completed archives (default)
-    --no-checksums           Don't generate checksum files
-    --use-btrfs-flags        Use BTRFS extended attributes to mark processed files
-    --clear-flags            Clear all autopak processing flags and exit
-    --check-duplicates       Check for duplicate files/archives before processing
-    --cleanup-repacked       Clean up duplicate _repacked filenames and exit
-
-SECURITY & ENCRYPTION:
-    --password-file FILE     Password file for encrypted archives
-    --password-vault FILE    Encrypted password vault file
-    --encrypt-archives       Encrypt created archives with AES-256
-    --secure-delete          Securely overwrite deleted files
-    --skip-passworded        Skip password-protected archives automatically
-    --flag-passworded        Log passworded files for review
-    --passworded-log FILE    Custom log file for passworded archives
-
-SIZE FORMATS:
-    Sizes can be specified with suffixes: K (KB), M (MB), G (GB)
-    Examples: 100K, 50M, 2G
-
-REPAIR AND RECOVERY:
-    --repair-corrupted       Try to repair corrupted RAR files automatically
-    --keep-broken-files      Extract partial data from damaged archives
-    The script can use recovery volumes (.rev files) if available
-    Multiple repair methods: WinRAR repair, 7-Zip extraction, recovery volumes
-
-MULTI-PART RAR SUPPORT:
-    The script automatically detects and handles multi-part RAR archives:
-    - Formats: archive.part01.rar, archive.r000/r001, archive.part1
-    - Only processes the first part, extracts complete archive
-    - Use --extract-multipart to extract to individual folders
-
-EXAMPLES:
-    $0 /path/to/archives                        # Basic usage
-    $0 -r -d -j 4 /path/to/archives             # Recursive, delete, 4 parallel jobs
-    $0 --arch zip --compression 6 /path/to/dir  # Use zip with level 6 compression
-    $0 -i "*.old.*" -e "*.backup.*" /path       # Include/exclude patterns
-    $0 --min-size 1M --max-size 100M /path      # Size filtering
-    $0 --verify --backup-original /path         # Safe mode with verification
-    $0 --cpu-limit 10 --nice-level 10 /path     # Background processing (10% CPU)
-    $0 --extract-multipart /path                # Extract multi-part RARs to folders
-    $0 --scan-only /path                        # Preview what would be processed
-    $0 --resume /path                           # Resume interrupted job
-
-SUPPORTED FORMATS:
-    Input:  zip, rar, 7z, exe, tar, tar.gz, tgz, tar.bz2, tar.xz, tar.zst,
-            gz, xz, bz2, lz, lzh, lha, cab, iso, img, dd, deb, pkg, pac, pp, dmg, pkg, mpkg, sit, sitx, sea
-            ace, arc, arj, z, Z (compress), multi-part RAR (part01.rar, r00/r01, etc.)
-    Output: 7z, zip, zstd, xz, gz, tar
-
-EOF
-} #closed show_help
+autopak_help() {
+    if [[ -f "autopak_help" ]]; then
+        [[ "$Q" != true ]] && cat "autopak_help"
+    else
+        echo "Help file not found."
+    fi
+}
 
 # Parse size argument
 parse_size() {
@@ -906,99 +913,99 @@ parse_size() {
 } #closed parse_size
 
 # Parse arguments
-parse_arguments() {
+parse_args() {
     while [[ "$#" -gt 0 ]]; do
         case "$1" in
-            -r|--recursive) RECURSIVE=true ;;
-            -d|--delete-original) DEL_ORG=true ;;
-            -b|--backup-original) BUP_ORG=true ;;
-            -n|--dry-run) DRY_RUN=true ;;
-            -q|--quiet) QUIET=true ;;
-            -v|--verify) VFY_ARCS=true ;;
-            -R|--resume) RESUME=true ;;
-            -s|--save-config) save_config; exit 0 ;;
-            -S|--single-file) SINGLE_FILE=true ;;
-            --scan-only) SCN_ONLY=true ;;
-            --repair-corrupted) REP_CRPT=true ;;
-            --keep-broken-files) KP_BRKF=true ;;
-            --ignore-corruption) IGN_CORR=true ;;
-            --folders-to-archives) FDRTO_ARCS=true ;;
-            --unpack-to-folders) UPKTO_FDR=true ;;
-            --extract-multipart) EXT_MULP=true ;;
-            --use-btrfs-flags) USE_BTRFS_FLAGS=true ;;
-            --ignore-processed) IGNORE_PROCESSED=true ;;
-            --clear-flags) CLEAR_FLAGS=true ;;
-            --timeout) shift; TIMEOUT_SECS="$1" ;;
-            --cleanup-repacked) CLEANUP_REPACKED=true ;;
-            --check-duplicates) CHECK_DUPLICATES=true ;;
-            --generate-checksums) GEN_CHECKSUMS=true ;;
-            --no-checksums) GEN_CHECKSUMS=false ;;
-            --checksum-db) shift; CHECKSUM_DB="$1" ;;
-            --password-file) shift; PASSWORD_FILE="$1" ;;
-            --password-vault) shift; PASSWORD_VAULT="$1" ;;
-            --encrypt-archives) ENCRYPT_ARCHIVES=true ;;
-            --skip-passworded) SKIP_PASSWORDED=true ;;
-            --flag-passworded) FLAG_PASSWORDED=true ;;
-            --passworded-log) shift; PASSWORDED_LOG="$1" ;;
-            --secure-delete) SECURE_DELETE=true ;;
+            -r|--recursive) REC=true ;;
+            -d|--delete-original) DEL=true ;;
+            -b|--backup-original) BUP=true ;;
+            -n|--dry-run) DRY=true ;;
+            -q|--quiet) Q=true ;;
+            -v|--verify) VFY=true ;;
+            -R|--resume) RES=true ;;
+            -s|--save-config) save_cfg; exit 0 ;;
+            -S|--single-file) SING_FIL=true ;;
+            --scan-only) SCN=true ;;
+            --repair-corrupted) REP_CRP=true ;;
+            --keep-broken-files) KP_BRK=true ;;
+            --ignore-corruption) IGN_COR=true ;;
+            --folders-to-archives) FDR_ARC=true ;;
+            --unpack-to-folders) UNP_FDR=true ;;
+            --extract-multipart) EXT_MP=true ;;
+            --use-btrfs-flags) BTRFS_FLG=true ;;
+            --ignore-processed) IGN_PROC=true ;;
+            --clear-flags) CLR_FLGS=true ;;
+            --timeout) shift; OUTATIME="$1" ;;
+            --cleanup-repacked) CLNUP_PKED=true ;;
+            --check-duplicates) CHK_DUPS=true ;;
+            --generate-checksums) GEN_CSUMS=true ;;
+            --no-checksums) GEN_CSUMS=false ;;
+            --checksum-db) shift; CHKSUM_DB="$1" ;;
+            --password-file) shift; PWD_FILE="$1" ;;
+            --password-vault) shift; PWD_VAULT="$1" ;;
+            --encrypt-archives) ENCRYPT_ARC=true ;;
+            --skip-passworded) SKP_PWD=true ;;
+            --flag-passworded) FLAG_PWD=true ;;
+            --passworded-log) shift; PWD_LOG="$1" ;;
+            --secure-delete) SEC_DEL=true ;;
             --cpu-limit)
                 shift
-                CPU_LIMIT="$1"
-                if ! [[ "$CPU_LIMIT" =~ ^[0-9]+$ ]] || (( CPU_LIMIT < 1 || CPU_LIMIT > 100 )); then
-                    echo "❌ Invalid CPU limit: $CPU_LIMIT (must be 1-100)"
+                CPU_LIM="$1"
+                if ! [[ "$CPU_LIM" =~ ^[0-9]+$ ]] || (( CPU_LIM < 1 || CPU_LIM > 100 )); then
+                    echo "❌ Invalid CPU limit: $CPU_LIM (must be 1-100)"
                     exit 1
                 fi #1
                 ;;
             --nice-level)
                 shift
-                NICE_LVL="$1"
-                if ! [[ "$NICE_LVL" =~ ^-?[0-9]+$ ]] || (( NICE_LVL < -20 || NICE_LVL > 19 )); then
-                    echo "❌ Invalid nice level: $NICE_LVL (must be -20 to 19)"
+                NICE="$1"
+                if ! [[ "$NICE" =~ ^-?[0-9]+$ ]] || (( NICE < -20 || NICE > 19 )); then
+                    echo "❌ Invalid nice level: $NICE (must be -20 to 19)"
                     exit 1
                 fi #1
                 ;;
             -j|--jobs)
                 shift
-                PAR_JOBS="$1"
-                if ! [[ "$PAR_JOBS" =~ ^[0-9]+$ ]] || (( PAR_JOBS < 1 )); then
-                    echo "❌ Invalid job count: $PAR_JOBS"
+                JOBS="$1"
+                if ! [[ "$JOBS" =~ ^[0-9]+$ ]] || (( JOBS < 1 )); then
+                    echo "❌ Invalid job count: $JOBS"
                     exit 1
                 fi #1
                 ;;
             -a|--arch)
                 shift
-                ARC_R="$1"
+                ARC="$1"
                 ;;
             -c|--compression)
                 shift
-                COPN_LVL="$1"
+                LVL="$1"
                 ;;
             -c*)
                 # Handle -c9, -c6, etc. (no space)
-                COPN_LVL="${1#-c}"
+                LVL="${1#-c}"
                 ;;
             -i|--include)
                 shift
-                INCL_PAT="$1"
+                INCL="$1"
                 ;;
             -e|--exclude)
                 shift
-                EXCL_PAT="$1"
+                EXCL="$1"
                 ;;
             -m|--min-size)
                 shift
-                MIN_SIZE=$(parse_size "$1")
+                MINS=$(parse_size "$1")
                 ;;
             -M|--max-size)
                 shift
-                MAX_SIZE=$(parse_size "$1")
+                MAXS=$(parse_size "$1")
                 ;;
             -C|--config)
                 shift
-                CONF_F="$1"
+                CFG="$1"
                 ;;
             -h|--help)
-                show_help
+                autopak_help
                 exit 0
                 ;;
             -*)
@@ -1007,102 +1014,183 @@ parse_arguments() {
                 exit 1
                 ;;
             *)
-                TARG_DIR="$1"
+                TDIR="$1"
                 ;;
         esac # in "$1"
         shift
     done ##1
-} #closed parse_arguments
+} #closed parse_args
 
 # Initialize logging
-init_logging() {
-    if [[ ! "$QUIET" == true ]]; then
+init_log() {
+    if [[ ! "$Q" == true ]]; then
         exec > >(tee -a "$LOGFILE") 2>&1
     else
         exec 2>> "$LOGFILE"
     fi #1
-} #closed init_logging
+} #closed init_log
+
+# CRITICAL FIX: Secure file deletion - REMOVED INFINITE RECURSION
+sec_delete() {
+    local file="$1"
+
+    if [[ ! "$SEC_DEL" == true ]] || [[ ! -f "$file" ]]; then
+        rm -f "$file" 2>/dev/null  # FIXED: Use rm instead of recursive call
+        return 0
+    fi #1
+
+    [[ ! "$Q" == true ]] && echo "🔒 Securely deleting: $(basename "$file")"
+
+    # Multiple pass secure deletion
+    if command -v shred &> /dev/null; then
+        shred -vfz -n 3 "$file" 2>/dev/null
+    elif command -v wipe &> /dev/null; then
+        wipe -rf "$file" 2>/dev/null
+    else
+        # Fallback: overwrite with random data
+        local filesize=$(stat -c%s "$file" 2>/dev/null || echo "0")
+        if (( filesize > 0 )); then
+            dd if=/dev/urandom of="$file" bs=1024 count=$((filesize / 1024 + 1)) 2>/dev/null
+            sync
+        fi #2
+        rm -f "$file" 2>/dev/null  # FIXED: Use rm instead of recursive call
+    fi #1
+
+    [[ ! "$Q" == true ]] && echo "✅ Secure deletion completed"
+} #closed sec_delete
+
+# BTRFS extended attribute functions #vers 1
+set_flag() {
+    local file="$1"
+
+    if [[ ! "$BTRFS_FLG" == true ]]; then
+        return 0
+    fi
+
+    if command -v setfattr &> /dev/null; then
+        setfattr -n user.autopak.processed -v "true" "$file" 2>/dev/null
+        setfattr -n user.autopak.date -v "$(date -Iseconds)" "$file" 2>/dev/null
+        setfattr -n user.autopak.version -v "1.0" "$file" 2>/dev/null
+    fi
+} #closed set_flag
+
+# Check if file has processed flag #vers 1
+is_flagged() {
+    local file="$1"
+
+    if [[ ! "$BTRFS_FLG" == true ]] || [[ ! "$IGN_PROC" == true ]]; then
+        return 1  # Not flagged
+    fi
+
+    if command -v getfattr &> /dev/null; then
+        local flag_value=$(getfattr -n user.autopak.processed --only-values "$file" 2>/dev/null)
+        [[ "$flag_value" == "true" ]]
+    else
+        return 1  # Can't check, assume not flagged
+    fi
+} #closed is_flagged
+
+# Generate checksum file and store in database #vers 1
+gen_checksum() {
+    local archive_file="$1"
+    local operation_type="$2"
+
+    if [[ ! "$GEN_CSUMS" == true ]] || [[ ! -f "$archive_file" ]]; then
+        return 0
+    fi
+
+    local checksum_file="${archive_file}.txt"
+    local filename=$(basename "$archive_file")
+    local filesize=$(get_size "$archive_file")
+    local sha256_hash=$(sha256sum "$archive_file" | cut -d' ' -f1)
+    local md5_hash=$(md5sum "$archive_file" | cut -d' ' -f1)
+    local current_date=$(date -Iseconds)
+
+    # Create checksum file
+    {
+        echo "# AutoPak Checksum Verification for: $filename"
+        echo "# Generated: $current_date"
+        echo "# Operation: $operation_type"
+        echo "# =================================="
+        echo
+        echo "File: $filename"
+        echo "Size: $filesize bytes ($(fmt_size "$filesize"))"
+        echo "SHA256: $sha256_hash"
+        echo "MD5: $md5_hash"
+        echo "Date: $current_date"
+        echo "Operation: $operation_type"
+    } > "$checksum_file"
+
+    [[ ! "$Q" == true ]] && echo "📋 Generated checksum: $(basename "$checksum_file")"
+} #closed gen_checksum
 
 # Main processing function
-process_archive() {
+proc_arc() {
     local file="$1"
     local current_num="$2"
     local total_num="$3"
 
     local basename=$(basename "$file")
     if [[ "$basename" =~ _repacked ]]; then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping already repacked: $basename"
-        save_resume_state "$file"
+        [[ ! "$Q" == true ]] && echo "⏩ Skipping already repacked: $basename"
+        save_state "$file"
         PROC_F=$((PROC_F + 1))
         return 0
     fi
     local ext="${basename##*.}"
     local stripped_name="${basename%.*}"
     local tmp_dir="$WORK_DIR/${stripped_name}_$_$current_num"
-    local o_size=$(get_file_size "$file")
+    local o_size=$(get_size "$file")
 
     # Check if already processed (resume functionality)
-    if $RESUME && is_already_processed "$file"; then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Already processed: $(basename "$file")"
+    if $RES && is_processed "$file"; then
+        [[ ! "$Q" == true ]] && echo "⏩ Already processed: $(basename "$file")"
         return 0
     fi #1
 
-    # Early password detection for common formats (NOT .exe files)
-    local ext_lower=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
-    if [[ "$ext_lower" =~ ^(zip|rar|7z)$ ]] && [[ ! "$ext_lower" == "exe" ]] && is_archive_passworded "$file" "$ext_lower"; then
-        if [[ "$SKIP_PASSWORDED" == true ]]; then
-            log_passworded_file "$file" "Archive detected as password-protected"
-            [[ ! "$QUIET" == true ]] && echo "⏩ Skipping passworded: $(basename "$file")"
-            SKP_FILS+=("$file")
-            return 0
-        elif [[ "$FLAG_PASSWORDED" == true ]]; then
-            log_passworded_file "$file" "Archive detected as password-protected, will prompt for password"
-        fi
-    fi
-
     # Size filtering
-    if (( MIN_SIZE > 0 && o_size < MIN_SIZE )); then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (too small): $basename"
-        SKP_FILS+=("$file")
+    if (( MINS > 0 && o_size < MINS )); then
+        [[ ! "$Q" == true ]] && echo "⏩ Skipping (too small): $basename"
+        SKP_F+=("$file")
         return 0
     fi #1
     
-    if (( MAX_SIZE > 0 && o_size > MAX_SIZE )); then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (too large): $basename"
-        SKP_FILS+=("$file")
+    if (( MAXS > 0 && o_size > MAXS )); then
+        [[ ! "$Q" == true ]] && echo "⏩ Skipping (too large): $basename"
+        SKP_F+=("$file")
         return 0
     fi #1
     
     # Pattern filtering
-    if [[ -n "$INCL_PAT" ]] && [[ ! "$basename" =~ $INCL_PAT ]]; then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (not matching include pattern): $basename"
-        SKP_FILS+=("$file")
+    if [[ -n "$INCL" ]] && [[ ! "$basename" =~ $INCL ]]; then
+        [[ ! "$Q" == true ]] && echo "⏩ Skipping (not matching include pattern): $basename"
+        SKP_F+=("$file")
         return 0
     fi #1
     
-    if [[ -n "$EXCL_PAT" ]] && [[ "$basename" =~ ${EXCL_PAT,,} ]]; then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (matching exclude pattern): $basename"
-        SKP_FILS+=("$file")
+    if [[ -n "$EXCL" ]] && [[ "$basename" =~ ${EXCL,,} ]]; then
+        [[ ! "$Q" == true ]] && echo "⏩ Skipping (matching exclude pattern): $basename"
+        SKP_F+=("$file")
         return 0
     fi #1
     
     # Skip already repacked files
     if [[ "$file" =~ _repacked(\.new[0-9]*)?\.([7z|zip|tar\.(gz|xz|zst)|tar])$ ]]; then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping already repacked: $basename"
-        SKP_FILS+=("$file")
+        [[ ! "$Q" == true ]] && echo "⏩ Skipping already repacked: $basename"
+        SKP_F+=("$file")
         return 0
     fi #1
     
     mkdir -p "$tmp_dir"
     
-    [[ ! "$QUIET" == true ]] && show_progress "$current_num" "$total_num" "$basename"
-    [[ ! "$QUIET" == true ]] && echo -e "\n➡️ Processing: $basename ($(format_size "$o_size"))"
+    [[ ! "$Q" == true ]] && show_progress "$current_num" "$total_num" "$basename"
+    [[ ! "$Q" == true ]] && echo -e "\n➡️ Processing: $basename ($(fmt_size "$o_size"))"
 
     # Create backup if requested
-    if $BUP_ORG && [[ ! "$DRY_RUN" == true ]]; then
+    if $BUP && [[ ! "$DRY" == true ]]; then
         local backup_file="${file}.backup"
         cp "$file" "$backup_file"
-        [[ ! "$QUIET" == true ]] && echo "💾 Created backup: $backup_file"
+        [[ ! "$Q" == true ]] && echo "💾 Created backup: $backup_file"
     fi #1
 
     # Special handling for multi-part archives and repair
@@ -1114,29 +1202,29 @@ process_archive() {
     local current_file="$file"
     
     # Check if repair is needed and attempt it
-    if $REP_CRPT && [[ "$ext" =~ ^(rar|r[0-9]+)$ || "$basename" =~ \.(part[0-9]+\.rar|part[0-9]+)$ ]]; then
-        if is_rar_corrupted "$file"; then
-            [[ ! "$QUIET" == true ]] && echo "⚠️ Corrupted RAR detected: $(basename "$file")"
+    if $REP_CRP && [[ "$ext" =~ ^(rar|r[0-9]+)$ || "$basename" =~ \.(part[0-9]+\.rar|part[0-9]+)$ ]]; then
+        if is_corrupt "$file"; then
+            [[ ! "$Q" == true ]] && echo "⚠️ Corrupted RAR detected: $(basename "$file")"
             local repair_dir="$tmp_dir/repair_temp"
-            local repaired_file=$(repair_rar_file "$file" "$repair_dir")
+            local repaired_file=$(repair_rar "$file" "$repair_dir")
             
             if [[ -n "$repaired_file" && -e "$repaired_file" ]]; then
                 if [[ -d "$repaired_file" ]]; then
                     # Repaired content is in a directory (broken extraction)
-                    [[ ! "$QUIET" == true ]] && echo "✅ Using repaired content from: $(basename "$repaired_file")"
+                    [[ ! "$Q" == true ]] && echo "✅ Using repaired content from: $(basename "$repaired_file")"
                     tmp_dir="$repaired_file"
                     repair_attempted=true
                     using_repaired=true
                     extract_success=true
                 else
                     # Repaired file is a new archive
-                    [[ ! "$QUIET" == true ]] && echo "✅ Using repaired archive: $(basename "$repaired_file")"
+                    [[ ! "$Q" == true ]] && echo "✅ Using repaired archive: $(basename "$repaired_file")"
                     current_file="$repaired_file"
                     repair_attempted=true
                     using_repaired=true
                 fi #4
             else
-                [[ ! "$QUIET" == true ]] && echo "❌ RAR repair failed, will attempt normal extraction"
+                [[ ! "$Q" == true ]] && echo "❌ RAR repair failed, will attempt normal extraction"
                 repair_attempted=true
             fi #3
         fi #2
@@ -1147,21 +1235,23 @@ process_archive() {
         extract_success=true
     else
         # Check if this is a multi-part RAR and handle accordingly
-        if is_multipart_rar "$current_file"; then
+        if is_multipart "$current_file"; then
             is_multipart=true
-            local first_part=$(get_multipart_first_part "$current_file")
+            local first_part=$(get_first_part "$current_file")
             
-            if $EXT_MULP; then
+            if $EXT_MP; then
                 # Create a dedicated folder for multi-part extraction
                 local archive_name="${basename%.*}"
                 # Remove part numbers from folder name
                 archive_name=$(echo "$archive_name" | sed -E 's/\.(part[0-9]+|r[0-9]+|part[0-9]+)$//')
                 multipart_folder="$tmp_dir/${archive_name}_extracted"
                 mkdir -p "$multipart_folder"
-                [[ ! "$QUIET" == true ]] && echo "📁 Extracting multi-part RAR to: $(basename "$multipart_folder")"
+                [[ ! "$Q" == true ]] && echo "📁 Extracting multi-part RAR to: $(basename "$multipart_folder")"
                 
                 # Extract using the first part
-                if $KP_BRKF; then
+                show_ext_prog "$first_part" "$multipart_folder" "unrar" &
+                local extract_pid=$!
+                if $KP_BRK; then
                     unrar x -kb -inul "$first_part" "$multipart_folder/" 2>/dev/null || \
                     7z x -bd -y -o"$multipart_folder" "$first_part" >/dev/null 2>&1 || \
                     extract_success=false
@@ -1170,13 +1260,18 @@ process_archive() {
                     7z x -bd -y -o"$multipart_folder" "$first_part" >/dev/null 2>&1 || \
                     extract_success=false
                 fi #4 -1
+                kill $extract_pid 2>/dev/null
+                wait $extract_pid 2>/dev/null
+                [[ ! "$Q" == true ]] && echo -e "\n"
                 
                 # Set extraction directory to the multipart folder
                 tmp_dir="$multipart_folder"
             else
                 # Standard extraction to temporary directory
-                [[ ! "$QUIET" == true ]] && echo "📦 Processing multi-part RAR: $basename"
-                if $KP_BRKF; then
+                [[ ! "$Q" == true ]] && echo "📦 Processing multi-part RAR: $basename"
+                show_ext_prog "$first_part" "$tmp_dir" "unrar" &
+                local extract_pid=$!
+                if $KP_BRK; then
                     unrar x -kb -inul "$first_part" "$tmp_dir/" 2>/dev/null || \
                     7z x -bd -y -o"$tmp_dir" "$first_part" >/dev/null 2>&1 || \
                     extract_success=false
@@ -1185,40 +1280,60 @@ process_archive() {
                     7z x -bd -y -o"$tmp_dir" "$first_part" >/dev/null 2>&1 || \
                     extract_success=false
                 fi #4 -2
+                kill $extract_pid 2>/dev/null
+                wait $extract_pid 2>/dev/null
+                [[ ! "$Q" == true ]] && echo -e "\n"
             fi #3 -1
         else
             # Standard extraction handler for non-multipart archives
-
         case "$ext" in
             zip|ZIP)
-                # Try regular extraction first, then encrypted if it fails
+                show_ext_prog "$current_file" "$tmp_dir" "unzip" &
+                local extract_pid=$!
                 if ! unzip -qq "$current_file" -d "$tmp_dir" 2>/dev/null && \
                 ! unzip -j -qq "$current_file" -d "$tmp_dir" 2>/dev/null && \
                 ! 7z x -bd -y -o"$tmp_dir" "$current_file" >/dev/null 2>&1; then
-                    # Try encrypted extraction
-                    extract_encrypted_archive "$current_file" "$tmp_dir" "zip" || extract_success=false
+                    extract_success=false
                 fi
+                kill $extract_pid 2>/dev/null
+                wait $extract_pid 2>/dev/null
+                [[ ! "$Q" == true ]] && echo -e "\n"
                 ;;
             rar)
-                if $KP_BRKF; then
+                show_ext_prog "$current_file" "$tmp_dir" "unrar" &
+                local extract_pid=$!
+                if $KP_BRK; then
                     if ! unrar x -kb -inul "$current_file" "$tmp_dir/" 2>/dev/null && \
                     ! 7z x -bd -y -o"$tmp_dir" "$current_file" >/dev/null 2>&1; then
-                        extract_encrypted_archive "$current_file" "$tmp_dir" "rar" || extract_success=false
+                        extract_success=false
                     fi
                 else
                     if ! unrar x -inul "$current_file" "$tmp_dir/" 2>/dev/null && \
                     ! 7z x -bd -y -o"$tmp_dir" "$current_file" >/dev/null 2>&1; then
-                        extract_encrypted_archive "$current_file" "$tmp_dir" "rar" || extract_success=false
+                        extract_success=false
                     fi
                 fi
+                kill $extract_pid 2>/dev/null
+                wait $extract_pid 2>/dev/null
+                [[ ! "$Q" == true ]] && echo -e "\n"
                 ;;
             7z|exe)
+                show_ext_prog "$current_file" "$tmp_dir" "7z" &
+                local extract_pid=$!
                 if ! 7z x -bd -y -o"$tmp_dir" "$file" >/dev/null 2>&1; then
-                    extract_encrypted_archive "$current_file" "$tmp_dir" "7z" || extract_success=false
+                    extract_success=false
                 fi
+                kill $extract_pid 2>/dev/null
+                wait $extract_pid 2>/dev/null
+                [[ ! "$Q" == true ]] && echo -e "\n"
                 ;;
-            tar) 
+            tar)
+                show_ext_prog "$current_file" "$tmp_dir" "tar" &
+                local extract_pid=$!
                 tar -xf "$file" -C "$tmp_dir" 2>/dev/null || extract_success=false
+                kill $extract_pid 2>/dev/null
+                wait $extract_pid 2>/dev/null
+                [[ ! "$Q" == true ]] && echo -e "\n"
                 ;;
             tgz|gz) 
                 if [[ "$basename" == *.tar.gz ]] || [[ "$basename" == *.tgz ]]; then
@@ -1268,109 +1383,30 @@ process_archive() {
                 tar -xf data.tar.* -C "$tmp_dir" 2>/dev/null) || \
                 extract_success=false
                 ;;
-            pkg|pac|pp)
-                7z x -bd -y -o"$tmp_dir" "$file" >/dev/null 2>&1 || extract_success=false
-                ;;
-            ace)
-                # ACE archive support - try multiple methods
-                if command -v unace &> /dev/null; then
-                    unace x "$file" "$tmp_dir/" 2>/dev/null || extract_success=false
-                elif command -v 7z &> /dev/null; then
-                    7z x -bd -y -o"$tmp_dir" "$file" >/dev/null 2>&1 || extract_success=false
-                else
-                    [[ ! "$QUIET" == true ]] && echo "⚠️ ACE support requires 'unace' or 7z with ACE plugin"
-                    extract_success=false
-                fi #3 -6
-                ;;
-            arc)
-                # ARC archive support (old DOS/Windows format)
-                if command -v arc &> /dev/null; then
-                    arc x "$current_file" "$tmp_dir/" 2>/dev/null || extract_success=false
-                elif command -v nomarch &> /dev/null; then
-                    nomarch "$current_file" "$tmp_dir/" 2>/dev/null || extract_success=false
-                elif command -v 7z &> /dev/null; then
-                    7z x -bd -y -o"$tmp_dir" "$current_file" >/dev/null 2>&1 || extract_success=false
-                else
-                    [[ ! "$QUIET" == true ]] && echo "⚠️ ARC support requires 'arc', 'nomarch', or 7z with ARC plugin"
-                    extract_success=false
-                fi
-                ;;
-            arj)
-                # ARJ archive support
-                if command -v arj &> /dev/null; then
-                    arj x "$file" "$tmp_dir/" 2>/dev/null || extract_success=false
-                elif command -v unarj &> /dev/null; then
-                    unarj x "$file" "$tmp_dir/" 2>/dev/null || extract_success=false
-                elif command -v 7z &> /dev/null; then
-                    7z x -bd -y -o"$tmp_dir" "$file" >/dev/null 2>&1 || extract_success=false
-                else
-                    [[ ! "$QUIET" == true ]] && echo "⚠️ ARJ support requires 'arj', 'unarj', or 7z with ARJ plugin"
-                    extract_success=false
-                fi #3 -7
-                ;;
-            dmg)
-                # macOS Disk Image (read-only on Linux)
-                if command -v 7z &> /dev/null; then
-                    7z x -bd -y -o"$tmp_dir" "$current_file" >/dev/null 2>&1 || extract_success=false
-                else
-                    [[ ! "$QUIET" == true ]] && echo "⚠️ DMG support requires 7z"
-                    extract_success=false
-                fi
-                ;;
-            sit|sitx)
-                # StuffIt archives (Mac)
-                if command -v unstuff &> /dev/null; then
-                    unstuff "$current_file" -d "$tmp_dir" 2>/dev/null || extract_success=false
-                elif command -v 7z &> /dev/null; then
-                    7z x -bd -y -o"$tmp_dir" "$current_file" >/dev/null 2>&1 || extract_success=false
-                else
-                    [[ ! "$QUIET" == true ]] && echo "⚠️ StuffIt support requires 'unstuff' or 7z"
-                    extract_success=false
-                fi
-                ;;
-            sea)
-                # Self-extracting archive (Mac)
-                # Usually needs to be run on macOS, try 7z as fallback
-                7z x -bd -y -o"$tmp_dir" "$current_file" >/dev/null 2>&1 || extract_success=false
-                ;;
-            z|Z)
-                # Unix compress (.Z) and pack (.z) format support
-                if command -v uncompress &> /dev/null; then
-                    uncompress -c "$file" > "$tmp_dir/${stripped_name}" 2>/dev/null || extract_success=false
-                elif command -v gzip &> /dev/null; then
-                    # gzip can sometimes handle .Z files
-                    gzip -dc "$file" > "$tmp_dir/${stripped_name}" 2>/dev/null || extract_success=false
-                elif command -v 7z &> /dev/null; then
-                    7z x -bd -y -o"$tmp_dir" "$file" >/dev/null 2>&1 || extract_success=false
-                else
-                    [[ ! "$QUIET" == true ]] && echo "⚠️ Compress format support requires 'uncompress', 'gzip', or 7z"
-                    extract_success=false
-                fi #3 -8
-                ;;
             r[0-9]*|part[0-9]*)
                 # Handle remaining multi-part files that weren't caught earlier
-                local first_part=$(get_multipart_first_part "$file")
+                local first_part=$(get_first_part "$file")
                 unrar x -inul "$first_part" "$tmp_dir/" 2>/dev/null || \
                 7z x -bd -y -o"$tmp_dir" "$first_part" >/dev/null 2>&1 || \
                 extract_success=false
                 ;;
             *)
-                [[ ! "$QUIET" == true ]] && echo "❓ Unsupported extension: $ext"
+                [[ ! "$Q" == true ]] && echo "❓ Unsupported extension: $ext"
                 extract_success=false
                 ;;
         esac # in "$ext"
         fi #2
-    fi #1 - was missing
+    fi #1
 
     if [[ "$extract_success" != true ]]; then
-        if $IGN_CORR; then
-            [[ ! "$QUIET" == true ]] && echo "⚠️ Extraction failed but continuing due to --ignore-corruption: $basename"
+        if $IGN_COR; then
+            [[ ! "$Q" == true ]] && echo "⚠️ Extraction failed but continuing due to --ignore-corruption: $basename"
             FAIL_F+=("$file")
             rm -rf "$tmp_dir"
             [[ -n "$multipart_folder" && -d "$multipart_folder" ]] && rm -rf "$multipart_folder"
             return 0  # Return success to continue processing
         else
-            [[ ! "$QUIET" == true ]] && echo "❌ Failed to extract: $basename"
+            [[ ! "$Q" == true ]] && echo "❌ Failed to extract: $basename"
             FAIL_F+=("$file")
             rm -rf "$tmp_dir"
             [[ -n "$multipart_folder" && -d "$multipart_folder" ]] && rm -rf "$multipart_folder"
@@ -1380,7 +1416,7 @@ process_archive() {
 
     # Check if extraction resulted in any files
     if [[ ! "$(ls -A "$tmp_dir")" ]]; then
-        [[ ! "$QUIET" == true ]] && echo "❌ Empty archive: $basename"
+        [[ ! "$Q" == true ]] && echo "❌ Empty archive: $basename"
         FAIL_F+=("$file")
         rm -rf "$tmp_dir"
         [[ -n "$multipart_folder" && -d "$multipart_folder" ]] && rm -rf "$multipart_folder"
@@ -1388,108 +1424,98 @@ process_archive() {
     fi #1
 
     # For multi-part extraction mode, we're done - just leave the extracted folder
-    if $EXT_MULP && [[ "$is_multipart" == true ]]; then
-        [[ ! "$QUIET" == true ]] && echo "✅ Multi-part archive extracted to: $(basename "$tmp_dir")"
-        save_resume_state "$file"
+    if $EXT_MP && [[ "$is_multipart" == true ]]; then
+        [[ ! "$Q" == true ]] && echo "✅ Multi-part archive extracted to: $(basename "$tmp_dir")"
+        save_state "$file"
         PROC_F=$((PROC_F + 1))
         return 0
     fi #1
 
     # Determine output filename
     local new_archive
-    case "$ARC_R" in
-        7z) new_archive=$(generate_output_filename "${file%.*}" "7z") ;;
-        zip) new_archive=$(generate_output_filename "${file%.*}" "zip") ;;
-        zstd) new_archive=$(generate_output_filename "${file%.*}" "tar.zst") ;;
-        xz) new_archive=$(generate_output_filename "${file%.*}" "tar.xz") ;;
-        gz) new_archive=$(generate_output_filename "${file%.*}" "tar.gz") ;;
-        tar) new_archive=$(generate_output_filename "${file%.*}" "tar") ;;
-    esac # in "$ARC_R"
+    case "$ARC" in
+        7z) new_archive=$(gen_filename "${file%.*}" "7z") ;;
+        zip) new_archive=$(gen_filename "${file%.*}" "zip") ;;
+        zstd) new_archive=$(gen_filename "${file%.*}" "tar.zst") ;;
+        xz) new_archive=$(gen_filename "${file%.*}" "tar.xz") ;;
+        gz) new_archive=$(gen_filename "${file%.*}" "tar.gz") ;;
+        tar) new_archive=$(gen_filename "${file%.*}" "tar") ;;
+    esac # in "$ARC"
 
-    if $DRY_RUN; then
-        [[ ! "$QUIET" == true ]] && echo "💡 Would repack: $basename → $(basename "$new_archive")"
-        if $DEL_ORG; then
-            [[ ! "$QUIET" == true ]] && echo "💡 Would delete original: $basename"
+    if $DRY; then
+        [[ ! "$Q" == true ]] && echo "💡 Would repack: $basename → $(basename "$new_archive")"
+        if $DEL; then
+            [[ ! "$Q" == true ]] && echo "💡 Would delete original: $basename"
         fi #2 -1
     else
-        [[ ! "$QUIET" == true ]] && echo "📦 Repacking to: $(basename "$new_archive")"
+        [[ ! "$Q" == true ]] && echo "📦 Repacking to: $(basename "$new_archive")"
         local repack_success=true
         
         # Set compression level
         local comp_opts=""
-        if [[ -n "$COPN_LVL" ]]; then
-            case "$ARC_R" in
-                7z) comp_opts="-mx=$COPN_LVL" ;;
-                zip) comp_opts="-$COPN_LVL" ;;
-                zstd) comp_opts="-$COPN_LVL" ;;
-                xz) comp_opts="-$COPN_LVL" ;;
-                gz) comp_opts="-$COPN_LVL" ;;
+        if [[ -n "$LVL" ]]; then
+            case "$ARC" in
+                7z) comp_opts="-mx=$LVL" ;;
+                zip) comp_opts="-$LVL" ;;
+                zstd) comp_opts="-$LVL" ;;
+                xz) comp_opts="-$LVL" ;;
+                gz) comp_opts="-$LVL" ;;
             esac
         fi #2 -2
         
-    case "$ARC_R" in
-        7z)
-            if ! create_encrypted_archive "$tmp_dir" "$new_archive" "7z" "${comp_opts:-"-mx=9"}"; then
-                # Fallback to regular archive with progress
-                show_compression_progress "$new_archive" "7z" &
+        case "$ARC" in
+            7z)
+                show_comp_prog "$new_archive" "7z" &
                 local progress_pid=$!
                 7z a -t7z ${comp_opts:-"-mx=9"} -m0=lzma2 "$new_archive" "$tmp_dir"/* >/dev/null 2>&1 || repack_success=false
                 kill $progress_pid 2>/dev/null
                 wait $progress_pid 2>/dev/null
-                [[ ! "$QUIET" == true ]] && echo -e "\n"
-            fi
-            ;;
-        zip)
-            if ! create_encrypted_archive "$tmp_dir" "$new_archive" "zip" "${comp_opts:-"-9"}"; then
-                # Fallback to regular archive with progress
-                show_compression_progress "$new_archive" "zip" &
+                [[ ! "$Q" == true ]] && echo -e "\n"
+                ;;
+            zip)
+                show_comp_prog "$new_archive" "zip" &
                 local progress_pid=$!
                 (cd "$tmp_dir" && zip -r ${comp_opts:-"-9"} -q "$new_archive" * 2>/dev/null) || repack_success=false
                 kill $progress_pid 2>/dev/null
                 wait $progress_pid 2>/dev/null
-                [[ ! "$QUIET" == true ]] && echo -e "\n"
-            fi
-            ;;
-        zstd)
-            # No encryption support for zstd, use regular with progress
-            show_compression_progress "$new_archive" "zstd" &
-            local progress_pid=$!
-            tar -C "$tmp_dir" -cf - . | zstd ${comp_opts:-"-19"} -T0 -o "$new_archive" 2>/dev/null || repack_success=false
-            kill $progress_pid 2>/dev/null
-            wait $progress_pid 2>/dev/null
-            [[ ! "$QUIET" == true ]] && echo -e "\n"
-            ;;
-        xz)
-            # No encryption support for xz, use regular with progress
-            show_compression_progress "$new_archive" "xz" &
-            local progress_pid=$!
-            tar -C "$tmp_dir" -cf - . | xz ${comp_opts:-"-9"} -c > "$new_archive" 2>/dev/null || repack_success=false
-            kill $progress_pid 2>/dev/null
-            wait $progress_pid 2>/dev/null
-            [[ ! "$QUIET" == true ]] && echo -e "\n"
-            ;;
-        gz)
-            # No encryption support for gz, use regular with progress
-            show_compression_progress "$new_archive" "gz" &
-            local progress_pid=$!
-            tar -C "$tmp_dir" -c${comp_opts:-"z"}f "$new_archive" . 2>/dev/null || repack_success=false
-            kill $progress_pid 2>/dev/null
-            wait $progress_pid 2>/dev/null
-            [[ ! "$QUIET" == true ]] && echo -e "\n"
-            ;;
-        tar)
-            # No encryption support for tar, use regular with progress
-            show_compression_progress "$new_archive" "tar" &
-            local progress_pid=$!
-            tar -C "$tmp_dir" -cf "$new_archive" . 2>/dev/null || repack_success=false
-            kill $progress_pid 2>/dev/null
-            wait $progress_pid 2>/dev/null
-            [[ ! "$QUIET" == true ]] && echo -e "\n"
-            ;;
-        esac # in "$ARC_R"
+                [[ ! "$Q" == true ]] && echo -e "\n"
+                ;;
+            zstd)
+                show_comp_prog "$new_archive" "zstd" &
+                local progress_pid=$!
+                tar -C "$tmp_dir" -cf - . | zstd ${comp_opts:-"-19"} -T0 -o "$new_archive" 2>/dev/null || repack_success=false
+                kill $progress_pid 2>/dev/null
+                wait $progress_pid 2>/dev/null
+                [[ ! "$Q" == true ]] && echo -e "\n"
+                ;;
+            xz)
+                show_comp_prog "$new_archive" "xz" &
+                local progress_pid=$!
+                tar -C "$tmp_dir" -cf - . | xz ${comp_opts:-"-9"} -c > "$new_archive" 2>/dev/null || repack_success=false
+                kill $progress_pid 2>/dev/null
+                wait $progress_pid 2>/dev/null
+                [[ ! "$Q" == true ]] && echo -e "\n"
+                ;;
+            gz)
+                show_comp_prog "$new_archive" "gz" &
+                local progress_pid=$!
+                tar -C "$tmp_dir" -c${comp_opts:-"z"}f "$new_archive" . 2>/dev/null || repack_success=false
+                kill $progress_pid 2>/dev/null
+                wait $progress_pid 2>/dev/null
+                [[ ! "$Q" == true ]] && echo -e "\n"
+                ;;
+            tar)
+                show_comp_prog "$new_archive" "tar" &
+                local progress_pid=$!
+                tar -C "$tmp_dir" -cf "$new_archive" . 2>/dev/null || repack_success=false
+                kill $progress_pid 2>/dev/null
+                wait $progress_pid 2>/dev/null
+                [[ ! "$Q" == true ]] && echo -e "\n"
+                ;;
+        esac # in "$ARC"
 
         if [[ "$repack_success" != true ]]; then
-            [[ ! "$QUIET" == true ]] && echo "❌ Failed to repack: $basename"
+            [[ ! "$Q" == true ]] && echo "❌ Failed to repack: $basename"
             FAIL_F+=("$file")
             rm -rf "$tmp_dir"
             [[ -n "$multipart_folder" && -d "$multipart_folder" ]] && rm -rf "$multipart_folder"
@@ -1497,30 +1523,30 @@ process_archive() {
         fi #2 -3
 
         # Verify repacked archive if requested
-        if $VFY_ARCS; then
-            if ! verify_archive "$new_archive" "$ARC_R"; then
-                [[ ! "$QUIET" == true ]] && echo "❌ Archive verification failed: $(basename "$new_archive")"
+        if $VFY; then
+            if ! verify_arc "$new_archive" "$ARC"; then
+                [[ ! "$Q" == true ]] && echo "❌ Archive verification failed: $(basename "$new_archive")"
                 FAIL_F+=("$file")
                 rm -f "$new_archive"
                 rm -rf "$tmp_dir"
                 [[ -n "$multipart_folder" && -d "$multipart_folder" ]] && rm -rf "$multipart_folder"
                 return 1
             fi
-            [[ ! "$QUIET" == true ]] && echo "✅ Archive verified: $(basename "$new_archive")"
+            [[ ! "$Q" == true ]] && echo "✅ Archive verified: $(basename "$new_archive")"
         fi #2 -4
 
         # Calculate and display compression statistics
-        local new_size=$(get_file_size "$new_archive")
-        local compression_ratio=$(calc_compression_ratio "$o_size" "$new_size")
+        local new_size=$(get_size "$new_archive")
+        local compression_ratio=$(calc_ratio "$o_size" "$new_size")
         
         REP_SIZE=$((REP_SIZE + new_size))
         
-        [[ ! "$QUIET" == true ]] && echo "📊 Size: $(format_size "$o_size") → $(format_size "$new_size") (${compression_ratio} compression)"
+        [[ ! "$Q" == true ]] && echo "📊 Size: $(fmt_size "$o_size") → $(fmt_size "$new_size") (${compression_ratio} compression)"
 
         # Handle original file
-        if $DEL_ORG; then
-            [[ ! "$QUIET" == true ]] && echo "🗑️ Deleting original: $basename"
-            secure_delete_file "$file"
+        if $DEL; then
+            [[ ! "$Q" == true ]] && echo "🗑️ Deleting original: $basename"
+            sec_delete "$file"
             
             # For multi-part RAR files, also delete the related parts
             if [[ "$is_multipart" == true ]]; then
@@ -1531,15 +1557,15 @@ process_archive() {
                 if [[ "$basename_no_ext" =~ ^(.*)\.part[0-9]+\.rar$ ]]; then
                     local base_name="${BASH_REMATCH[1]}"
                     rm -f "$dir/${base_name}".part*.rar 2>/dev/null
-                    [[ ! "$QUIET" == true ]] && echo "🗑️ Deleted multi-part RAR set: ${base_name}.part*.rar"
+                    [[ ! "$Q" == true ]] && echo "🗑️ Deleted multi-part RAR set: ${base_name}.part*.rar"
                 elif [[ "$basename_no_ext" =~ ^(.*)\.rar$ ]]; then
                     local base_name="${BASH_REMATCH[1]}"
                     rm -f "$dir/${base_name}".r[0-9]* 2>/dev/null
-                    [[ ! "$QUIET" == true ]] && echo "🗑️ Deleted multi-part RAR set: ${base_name}.r*"
+                    [[ ! "$Q" == true ]] && echo "🗑️ Deleted multi-part RAR set: ${base_name}.r*"
                 elif [[ "$basename_no_ext" =~ ^(.*)\.part[0-9]+$ ]]; then
                     local base_name="${BASH_REMATCH[1]}"
                     rm -f "$dir/${base_name}".part[0-9]* 2>/dev/null
-                    [[ ! "$QUIET" == true ]] && echo "🗑️ Deleted multi-part set: ${base_name}.part*"
+                    [[ ! "$Q" == true ]] && echo "🗑️ Deleted multi-part set: ${base_name}.part*"
                 fi #4
             fi #3
         fi #2
@@ -1550,1086 +1576,40 @@ process_archive() {
     [[ -n "$multipart_folder" && -d "$multipart_folder" ]] && rm -rf "$multipart_folder"
     
     # Save resume state
-    save_resume_state "$file"
+    save_state "$file"
     
     PROC_F=$((PROC_F + 1))
-    [[ ! "$QUIET" == true ]] && echo "✅ Done: $basename"
+    [[ ! "$Q" == true ]] && echo "✅ Done: $basename"
     
-    generate_checksum_file "$new_archive" "archive_creation"
+    gen_checksum "$new_archive" "archive_creation"
 
     # Set processed flag
-    set_processed_flag "$file"
+    set_flag "$file"
 
     return 0
-} #closed process_archive
-
-
-# Process folder into archive #vers 1
-process_folder() {
-    local folder="$1"
-    local current_num="$2"
-    local total_num="$3"
-
-    # Check if already processed (resume functionality)
-    if $RESUME && is_already_processed "$folder"; then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Already processed: $(basename "$folder")"
-        return 0
-    fi #1
-
-    local basename=$(basename "$folder")
-    if [[ "$basename" =~ _archived$ ]]; then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping already archived: $basename"
-        save_resume_state "$folder"
-        PROC_F=$((PROC_F + 1))
-        return 0
-    fi
-    local folder_size=$(du -sb "$folder" 2>/dev/null | cut -f1)
-
-    # CRITICAL FIX: Use correct variable names for password check
-    local ext_lower="folder"  # folders don't have extensions, but check is needed for consistency
-    # Remove password check for folders since they're not encrypted archives
-
-    # Size filtering
-    if (( MIN_SIZE > 0 && folder_size < MIN_SIZE )); then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (too small): $basename"
-        SKP_FILS+=("$folder")
-        return 0
-    fi #1
-
-    if (( MAX_SIZE > 0 && folder_size > MAX_SIZE )); then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (too large): $basename"
-        SKP_FILS+=("$folder")
-        return 0
-    fi #1
-
-    # Pattern filtering
-    if [[ -n "$INCL_PAT" ]] && [[ ! "$basename" =~ $INCL_PAT ]]; then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (not matching include pattern): $basename"
-        SKP_FILS+=("$folder")
-        return 0
-    fi #1
-
-    if [[ -n "$EXCL_PAT" ]] && [[ "$basename" =~ ${EXCL_PAT,,} ]]; then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (matching exclude pattern): $basename"
-        SKP_FILS+=("$folder")
-        return 0
-    fi #1
-
-    [[ ! "$QUIET" == true ]] && show_progress "$current_num" "$total_num" "$basename"
-    [[ ! "$QUIET" == true ]] && echo -e "\n➡️ Processing folder: $basename ($(format_size "$folder_size"))"
-
-    # Create backup if requested
-    if $BUP_ORG && [[ ! "$DRY_RUN" == true ]]; then
-        local backup_folder="${folder}.backup"
-        cp -r "$folder" "$backup_folder"
-        [[ ! "$QUIET" == true ]] && echo "💾 Created backup: $backup_folder"
-    fi #1
-
-    # Determine output filename
-    local new_archive
-    case "$ARC_R" in
-        7z) new_archive=$(generate_output_filename "${folder}_archived" "7z") ;;
-        zip) new_archive=$(generate_output_filename "${folder}_archived" "zip") ;;
-        zstd) new_archive=$(generate_output_filename "${folder}_archived" "tar.zst") ;;
-        xz) new_archive=$(generate_output_filename "${folder}_archived" "tar.xz") ;;
-        gz) new_archive=$(generate_output_filename "${folder}_archived" "tar.gz") ;;
-        tar) new_archive=$(generate_output_filename "${folder}_archived" "tar") ;;
-    esac # in "$ARC_R"
-
-    if $DRY_RUN; then
-        [[ ! "$QUIET" == true ]] && echo "💡 Would archive: $basename → $(basename "$new_archive")"
-        if $DEL_ORG; then
-            [[ ! "$QUIET" == true ]] && echo "💡 Would delete original folder: $basename"
-        fi #2
-    else
-        [[ ! "$QUIET" == true ]] && echo "📦 Archiving to: $(basename "$new_archive")"
-        local archive_success=true
-
-        # Set compression level
-        local comp_opts=""
-        if [[ -n "$COPN_LVL" ]]; then
-            case "$ARC_R" in
-                7z) comp_opts="-mx=$COPN_LVL" ;;
-                zip) comp_opts="-$COPN_LVL" ;;
-                zstd) comp_opts="-$COPN_LVL" ;;
-                xz) comp_opts="-$COPN_LVL" ;;
-                gz) comp_opts="-$COPN_LVL" ;;
-            esac
-        fi #2
-
-        case "$ARC_R" in
-            7z)
-                if ! create_encrypted_archive "$(dirname "$folder")" "$new_archive" "7z" "${comp_opts:-"-mx=9"}"; then
-                    show_compression_progress "$new_archive" "7z" &
-                    local progress_pid=$!
-                    7z a -t7z ${comp_opts:-"-mx=9"} -m0=lzma2 "$new_archive" "$folder"/* >/dev/null 2>&1 || archive_success=false
-                    kill $progress_pid 2>/dev/null
-                    wait $progress_pid 2>/dev/null
-                    [[ ! "$QUIET" == true ]] && echo -e "\n"
-                fi
-                ;;
-            zip)
-                if ! create_encrypted_archive "$(dirname "$folder")" "$new_archive" "zip" "${comp_opts:-"-9"}"; then
-                    show_compression_progress "$new_archive" "zip" &
-                    local progress_pid=$!
-                    (cd "$(dirname "$folder")" && zip -r ${comp_opts:-"-9"} -q "$new_archive" "$(basename "$folder")" 2>/dev/null) || archive_success=false
-                    kill $progress_pid 2>/dev/null
-                    wait $progress_pid 2>/dev/null
-                    [[ ! "$QUIET" == true ]] && echo -e "\n"
-                fi
-                ;;
-            zstd)
-                show_compression_progress "$new_archive" "zstd" &
-                local progress_pid=$!
-                tar -C "$(dirname "$folder")" -cf - "$(basename "$folder")" | zstd ${comp_opts:-"-19"} -T0 -o "$new_archive" 2>/dev/null || archive_success=false
-                kill $progress_pid 2>/dev/null
-                wait $progress_pid 2>/dev/null
-                [[ ! "$QUIET" == true ]] && echo -e "\n"
-                ;;
-            xz)
-                show_compression_progress "$new_archive" "xz" &
-                local progress_pid=$!
-                tar -C "$(dirname "$folder")" -cf - "$(basename "$folder")" | xz ${comp_opts:-"-9"} -c > "$new_archive" 2>/dev/null || archive_success=false
-                kill $progress_pid 2>/dev/null
-                wait $progress_pid 2>/dev/null
-                [[ ! "$QUIET" == true ]] && echo -e "\n"
-                ;;
-            gz)
-                show_compression_progress "$new_archive" "gz" &
-                local progress_pid=$!
-                tar -C "$(dirname "$folder")" -c${comp_opts:-"z"}f "$new_archive" "$(basename "$folder")" 2>/dev/null || archive_success=false
-                kill $progress_pid 2>/dev/null
-                wait $progress_pid 2>/dev/null
-                [[ ! "$QUIET" == true ]] && echo -e "\n"
-                ;;
-            tar)
-                show_compression_progress "$new_archive" "tar" &
-                local progress_pid=$!
-                tar -C "$(dirname "$folder")" -cf "$new_archive" "$(basename "$folder")" 2>/dev/null || archive_success=false
-                kill $progress_pid 2>/dev/null
-                wait $progress_pid 2>/dev/null
-                [[ ! "$QUIET" == true ]] && echo -e "\n"
-                ;;
-        esac # in "$ARC_R"
-
-        if [[ "$archive_success" != true ]]; then
-            [[ ! "$QUIET" == true ]] && echo "❌ Failed to archive: $basename"
-            FAIL_F+=("$folder")
-            return 1
-        fi #2
-
-        # Verify archive if requested
-        if $VFY_ARCS; then
-            if ! verify_archive "$new_archive" "$ARC_R"; then
-                [[ ! "$QUIET" == true ]] && echo "❌ Archive verification failed: $(basename "$new_archive")"
-                FAIL_F+=("$folder")
-                rm -f "$new_archive"
-                return 1
-            fi
-            [[ ! "$QUIET" == true ]] && echo "✅ Archive verified: $(basename "$new_archive")"
-        fi #2
-
-        # Calculate and display compression statistics
-        local new_size=$(get_file_size "$new_archive")
-        local compression_ratio=$(calc_compression_ratio "$folder_size" "$new_size")
-
-        REP_SIZE=$((REP_SIZE + new_size))
-
-        [[ ! "$QUIET" == true ]] && echo "📊 Size: $(format_size "$folder_size") → $(format_size "$new_size") (${compression_ratio} compression)"
-
-        # Handle original folder
-        if $DEL_ORG; then
-            [[ ! "$QUIET" == true ]] && echo "🗑️ Deleting original folder: $basename"
-            rm -rf "$folder"
-        fi #2
-    fi #1
-
-    # Save resume state
-    save_resume_state "$folder"
-
-    PROC_F=$((PROC_F + 1))
-    [[ ! "$QUIET" == true ]] && echo "✅ Done: $basename"
-
-    # Generate checksum file
-    generate_checksum_file "$new_archive" "archive_creation"
-
-    # Set processed flag
-    set_processed_flag "$folder"
-
-    return 0
-} #closed process_folder
-
-
-# Process archive into folder #vers 1
-process_unpack() {
-    local archive="$1"
-    local current_num="$2"
-    local total_num="$3"
-
-
-    # Check if already processed (resume functionality)
-    if $RESUME && is_already_processed "$archive"; then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Already processed: $(basename "$archive")"
-        return 0
-    fi
-
-    local basename=$(basename "$archive")
-    if [[ "$basename" =~ _repacked ]]; then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping already repacked: $basename"
-        save_resume_state "$archive"
-        PROC_F=$((PROC_F + 1))
-        return 0
-    fi
-    local archive_size=$(get_file_size "$archive")
-
-    # Get folder name (remove extension and clean suffixes)
-    local folder_name
-    if is_multipart_rar "$archive"; then
-        # For multi-part, use base name without part numbers
-        folder_name=$(echo "$basename" | sed -E 's/\.(part[0-9]+\.rar|r[0-9]+|part[0-9]+)$//')
-    else
-        # Remove standard extensions
-        folder_name=$(echo "$basename" | sed -E 's/\.(zip|rar|7z|exe|tar|tar\.gz|tgz|tar\.bz2|tar\.xz|tar\.zst|gz|xz|bz2|lz|lzh|lha|cab|iso|img|dd|deb|pkg|pac|pp|ace|arj|z|Z)$//')
-    fi
-
-    # Clean up any previous processing suffixes
-    folder_name=$(echo "$folder_name" | sed -E 's/_archived(_repacked)?$//')
-    folder_name=$(echo "$folder_name" | sed -E 's/_repacked(\.new[0-9]*)?$//')
-
-    local target_folder="$(dirname "$archive")/$folder_name"
-
-    # Skip if folder already exists
-    if [[ -d "$target_folder" ]]; then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (folder exists): $folder_name"
-        SKP_FILS+=("$archive")
-        return 0
-    fi
-
-    # CRITICAL FIX: Use correct variable names for password check
-    local archive_ext="${basename##*.}"
-    local ext_lower=$(echo "$archive_ext" | tr '[:upper:]' '[:lower:]')
-    if [[ "$ext_lower" =~ ^(zip|rar|7z)$ ]] && is_archive_passworded "$archive" "$ext_lower"; then
-        if [[ "$SKIP_PASSWORDED" == true ]]; then
-            log_passworded_file "$archive" "Archive detected as password-protected"
-            [[ ! "$QUIET" == true ]] && echo "⏩ Skipping passworded: $(basename "$archive")"
-            SKP_FILS+=("$archive")
-            return 0
-        elif [[ "$FLAG_PASSWORDED" == true ]]; then
-            log_passworded_file "$archive" "Archive detected as password-protected, will prompt for password"
-        fi
-    fi
-
-    # Size filtering
-    if (( MIN_SIZE > 0 && archive_size < MIN_SIZE )); then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (too small): $basename"
-        SKP_FILS+=("$archive")
-        return 0
-    fi
-
-    if (( MAX_SIZE > 0 && archive_size > MAX_SIZE )); then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (too large): $basename"
-        SKP_FILS+=("$archive")
-        return 0
-    fi
-
-    # Pattern filtering
-    if [[ -n "$INCL_PAT" ]] && [[ ! "$basename" =~ $INCL_PAT ]]; then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (not matching include pattern): $basename"
-        SKP_FILS+=("$archive")
-        return 0
-    fi
-
-    if [[ -n "$EXCL_PAT" ]] && [[ "$basename" =~ ${EXCL_PAT,,} ]]; then
-        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping (matching exclude pattern): $basename"
-        SKP_FILS+=("$archive")
-        return 0
-    fi
-
-    [[ ! "$QUIET" == true ]] && show_progress "$current_num" "$total_num" "$basename"
-    [[ ! "$QUIET" == true ]] && echo -e "\n➡️ Unpacking: $basename ($(format_size "$archive_size")) → $folder_name/"
-
-    # Create backup if requested
-    if $BUP_ORG && [[ ! "$DRY_RUN" == true ]]; then
-        local backup_file="${archive}.backup"
-        cp "$archive" "$backup_file"
-        [[ ! "$QUIET" == true ]] && echo "💾 Created backup: $backup_file"
-    fi
-
-    if $DRY_RUN; then
-        [[ ! "$QUIET" == true ]] && echo "💡 Would unpack: $basename → $folder_name/"
-        if $DEL_ORG; then
-            [[ ! "$QUIET" == true ]] && echo "💡 Would delete original: $basename"
-        fi
-    else
-        # Create target folder
-        mkdir -p "$target_folder"
-        [[ ! "$QUIET" == true ]] && echo "📁 Created folder: $folder_name"
-
-        local extract_success=true
-        local current_file="$archive"
-
-        # Handle repair for corrupted RAR files
-        if $REP_CRPT && [[ "$basename" =~ \.(rar|r[0-9]+|part[0-9]+\.rar|part[0-9]+)$ ]]; then
-            if is_rar_corrupted "$archive"; then
-                [[ ! "$QUIET" == true ]] && echo "⚠️ Corrupted RAR detected, attempting repair..."
-                local repair_dir="$target_folder/repair_temp"
-                local repaired_file=$(repair_rar_file "$archive" "$repair_dir")
-
-                if [[ -n "$repaired_file" && -e "$repaired_file" ]]; then
-                    [[ ! "$QUIET" == true ]] && echo "✅ Using repaired archive"
-                    current_file="$repaired_file"
-                fi
-            fi
-        fi
-
-        # Extract archive using same logic as process_archive
-        local archive_ext="${basename##*.}"
-        if is_multipart_rar "$current_file"; then
-            local first_part=$(get_multipart_first_part "$current_file")
-            [[ ! "$QUIET" == true ]] && echo "📦 Extracting multi-part RAR..."
-
-            if $KP_BRKF; then
-                unrar x -kb -inul "$first_part" "$target_folder/" 2>/dev/null || \
-                7z x -bd -y -o"$target_folder" "$first_part" >/dev/null 2>&1 || \
-                extract_success=false
-            else
-                unrar x -inul "$first_part" "$target_folder/" 2>/dev/null || \
-                7z x -bd -y -o"$target_folder" "$first_part" >/dev/null 2>&1 || \
-                extract_success=false
-            fi
-        else
-            # Standard extraction (use same case logic as process_archive)
-        case "$archive_ext" in
-            zip)
-                if ! unzip -qq "$current_file" -d "$target_folder" 2>/dev/null && \
-                ! 7z x -bd -y -o"$target_folder" "$current_file" >/dev/null 2>&1; then
-                    extract_encrypted_archive "$current_file" "$target_folder" "zip" || extract_success=false
-                fi
-                ;;
-            rar)
-                if $KP_BRKF; then
-                    if ! unrar x -kb -inul "$current_file" "$target_folder/" 2>/dev/null && \
-                    ! 7z x -bd -y -o"$target_folder" "$current_file" >/dev/null 2>&1; then
-                        extract_encrypted_archive "$current_file" "$target_folder" "rar" || extract_success=false
-                    fi
-                else
-                    if ! unrar x -inul "$current_file" "$target_folder/" 2>/dev/null && \
-                    ! 7z x -bd -y -o"$target_folder" "$current_file" >/dev/null 2>&1; then
-                        extract_encrypted_archive "$current_file" "$target_folder" "rar" || extract_success=false
-                    fi #2
-                fi #1
-                ;;
-            7z|exe)
-                if ! 7z x -bd -y -o"$target_folder" "$current_file" >/dev/null 2>&1; then
-                    extract_encrypted_archive "$current_file" "$target_folder" "7z" || extract_success=false
-                fi
-                ;;
-                tar)
-                    tar -xf "$current_file" -C "$target_folder" 2>/dev/null || extract_success=false
-                    ;;
-                *)
-                    # Use same extraction logic as process_archive for other formats
-                    7z x -bd -y -o"$target_folder" "$current_file" >/dev/null 2>&1 || extract_success=false
-                    ;;
-            esac # in "$archive_ext"
-        fi
-
-        if [[ "$extract_success" != true ]]; then
-            [[ ! "$QUIET" == true ]] && echo "❌ Failed to extract: $basename"
-            FAIL_F+=("$archive")
-            rm -rf "$target_folder"
-            return 1
-        fi
-
-        # Check if extraction resulted in any files
-        if [[ ! "$(ls -A "$target_folder")" ]]; then
-            [[ ! "$QUIET" == true ]] && echo "❌ Empty extraction: $basename"
-            FAIL_F+=("$archive")
-            rm -rf "$target_folder"
-            return 1
-        fi
-
-        [[ ! "$QUIET" == true ]] && echo "✅ Extracted to: $folder_name/"
-
-        # Handle original archive
-        if $DEL_ORG; then
-            [[ ! "$QUIET" == true ]] && echo "🗑️ Deleting original: $basename"
-            secure_delete_file "$archive"
-
-            # For multi-part RAR files, also delete the related parts
-            if is_multipart_rar "$archive"; then
-                local dir=$(dirname "$archive")
-                local basename_no_ext=$(basename "$archive")
-
-                if [[ "$basename_no_ext" =~ ^(.*)\.part[0-9]+\.rar$ ]]; then
-                    local base_name="${BASH_REMATCH[1]}"
-                    rm -f "$dir/${base_name}".part*.rar 2>/dev/null
-                    [[ ! "$QUIET" == true ]] && echo "🗑️ Deleted multi-part RAR set: ${base_name}.part*.rar"
-                elif [[ "$basename_no_ext" =~ ^(.*)\.rar$ ]]; then
-                    local base_name="${BASH_REMATCH[1]}"
-                    rm -f "$dir/${base_name}".r[0-9]* 2>/dev/null
-                    [[ ! "$QUIET" == true ]] && echo "🗑️ Deleted multi-part RAR set: ${base_name}.r*"
-                fi
-            fi
-        fi
-    fi
-
-    # Save resume state
-    save_resume_state "$archive"
-
-    PROC_F=$((PROC_F + 1))
-    [[ ! "$QUIET" == true ]] && echo "✅ Done: $basename"
-
-    # Generate checksum file for the extracted folder
-    if $GEN_CHECKSUMS; then
-        local checksum_file="${target_folder}.extraction.txt"
-        local current_date=$(date -Iseconds)
-        {
-            echo "# AutoPak Extraction Verification for: $folder_name"
-            echo "# Generated: $current_date"
-            echo "# Source archive: $basename"
-            echo "# =================================="
-            echo
-            echo "Extracted folder: $folder_name"
-            echo "Source archive: $basename"
-            echo "Source size: $archive_size bytes ($(format_size "$archive_size"))"
-            echo "Date: $current_date"
-            echo "Operation: archive_extraction"
-        } > "$checksum_file"
-        [[ ! "$QUIET" == true ]] && echo "📋 Generated extraction log: $(basename "$checksum_file")"
-    fi
-
-    # Set processed flag
-    set_processed_flag "$archive"
-
-    return 0
-} #closed process_unpack
-
-
-# Initialize checksum database #vers 1
-init_checksum_db() {
-    if [[ ! -f "$CHECKSUM_DB" ]]; then
-        sqlite3 "$CHECKSUM_DB" << 'EOF'
-CREATE TABLE IF NOT EXISTS checksums (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    filename TEXT NOT NULL,
-    filepath TEXT NOT NULL,
-    filesize INTEGER,
-    sha256 TEXT,
-    md5 TEXT,
-    processed_date TEXT,
-    operation_type TEXT,
-    UNIQUE(filepath)
-);
-CREATE INDEX IF NOT EXISTS idx_filepath ON checksums(filepath);
-CREATE INDEX IF NOT EXISTS idx_sha256 ON checksums(sha256);
-CREATE INDEX IF NOT EXISTS idx_md5 ON checksums(md5);
-EOF
-    fi
-} #closed init_checksum_db
-
-# Generate checksum file and store in database #vers 1
-generate_checksum_file() {
-    local archive_file="$1"
-    local operation_type="$2"
-
-    if [[ ! "$GEN_CHECKSUMS" == true ]] || [[ ! -f "$archive_file" ]]; then
-        return 0
-    fi
-
-    local checksum_file="${archive_file}.txt"
-    local filename=$(basename "$archive_file")
-    local filesize=$(get_file_size "$archive_file")
-    local sha256_hash=$(sha256sum "$archive_file" | cut -d' ' -f1)
-    local md5_hash=$(md5sum "$archive_file" | cut -d' ' -f1)
-    local current_date=$(date -Iseconds)
-
-    # Create checksum file
-    {
-        echo "# AutoPak Checksum Verification for: $filename"
-        echo "# Generated: $current_date"
-        echo "# Operation: $operation_type"
-        echo "# =================================="
-        echo
-        echo "File: $filename"
-        echo "Size: $filesize bytes ($(format_size "$filesize"))"
-        echo "SHA256: $sha256_hash"
-        echo "MD5: $md5_hash"
-        echo "Date: $current_date"
-        echo "Operation: $operation_type"
-    } > "$checksum_file"
-
-    # Store in database
-    if command -v sqlite3 &> /dev/null; then
-        sqlite3 "$CHECKSUM_DB" << EOF
-INSERT OR REPLACE INTO checksums
-(filename, filepath, filesize, sha256, md5, processed_date, operation_type)
-VALUES
-('$filename', '$archive_file', $filesize, '$sha256_hash', '$md5_hash', '$current_date', '$operation_type');
-EOF
-    fi
-
-    [[ ! "$QUIET" == true ]] && echo "📋 Generated checksum: $(basename "$checksum_file")"
-} #closed generate_checksum_file
-
-# Check if archive is password protected #vers 1
-is_archive_passworded() {
-    local archive_file="$1"
-    local archive_type="$2"
-
-    case "$archive_type" in
-        zip)
-            # More specific password check for ZIP
-            if unzip -t "$archive_file" 2>&1 | grep -q "incorrect password\|need PK compat"; then
-                return 0  # Is passworded
-            fi
-            ;;
-        rar)
-            # More specific password check for RAR
-            if unrar t "$archive_file" 2>&1 | grep -q "password required\|encrypted headers"; then
-                return 0  # Is passworded
-            fi
-            ;;
-        7z)
-            # More specific password check for 7z
-            if 7z t "$archive_file" 2>&1 | grep -q "Wrong password\|password required"; then
-                return 0  # Is passworded
-            fi
-            ;;
-    esac
-
-    return 1  # Not passworded
-} #closed is_archive_passworded
-
-# Log passworded file #vers 1
-log_passworded_file() {
-    local archive_file="$1"
-    local reason="$2"
-
-    if [[ "$FLAG_PASSWORDED" == true ]]; then
-        {
-            echo "Passworded file detected: $(date -Iseconds)"
-            echo "File: $archive_file"
-            echo "Size: $(get_file_size "$archive_file") bytes ($(format_size "$(get_file_size "$archive_file")"))"
-            echo "Reason: $reason"
-            echo "Location: $(dirname "$archive_file")"
-            echo "---"
-        } >> "$PASSWORDED_LOG"
-
-        [[ ! "$QUIET" == true ]] && echo "🔐 Logged passworded file: $(basename "$archive_file")"
-    fi
-} #closed log_passworded_file
-
-# Check for duplicate files using checksums #vers 1
-check_for_duplicates() {
-    if [[ ! "$CHECK_DUPLICATES" == true ]] || [[ ! -f "$CHECKSUM_DB" ]]; then
-        return 0
-    fi
-
-    [[ ! "$QUIET" == true ]] && echo "🔍 Checking for duplicate files..."
-
-    local duplicates_found=false
-    local temp_dups="/tmp/autopak_duplicates_$.txt"
-
-    # Find duplicates by SHA256
-    sqlite3 "$CHECKSUM_DB" << 'EOF' > "$temp_dups"
-SELECT sha256, COUNT(*) as count, GROUP_CONCAT(filepath, ' | ') as files
-FROM checksums
-WHERE sha256 != ''
-GROUP BY sha256
-HAVING count > 1
-ORDER BY count DESC;
-EOF
-
-    if [[ -s "$temp_dups" ]]; then
-        duplicates_found=true
-        [[ ! "$QUIET" == true ]] && echo "⚠️ Duplicate files found:"
-        while IFS='|' read -r sha256 count files; do
-            [[ ! "$QUIET" == true ]] && echo "  🔄 $count copies (SHA256: ${sha256:0:16}...): $files"
-        done < "$temp_dups"
-    fi
-
-    rm -f "$temp_dups"
-
-    if [[ "$duplicates_found" == true ]]; then
-        [[ ! "$QUIET" == true ]] && echo "💡 Consider using --exclude-pattern to skip duplicate processing"
-    else
-        [[ ! "$QUIET" == true ]] && echo "✅ No duplicates found"
-    fi
-} #closed check_for_duplicates
-
-# BTRFS extended attribute functions #vers 1
-set_processed_flag() {
-    local file="$1"
-
-    if [[ ! "$USE_BTRFS_FLAGS" == true ]]; then
-        return 0
-    fi
-
-    if command -v setfattr &> /dev/null; then
-        setfattr -n user.autopak.processed -v "true" "$file" 2>/dev/null
-        setfattr -n user.autopak.date -v "$(date -Iseconds)" "$file" 2>/dev/null
-        setfattr -n user.autopak.version -v "1.0" "$file" 2>/dev/null
-    fi
-} #closed set_processed_flag
-
-# Check if file has processed flag #vers 1
-is_file_flagged() {
-    local file="$1"
-
-    if [[ ! "$USE_BTRFS_FLAGS" == true ]] || [[ ! "$IGNORE_PROCESSED" == true ]]; then
-        return 1  # Not flagged
-    fi
-
-    if command -v getfattr &> /dev/null; then
-        local flag_value=$(getfattr -n user.autopak.processed --only-values "$file" 2>/dev/null)
-        [[ "$flag_value" == "true" ]]
-    else
-        return 1  # Can't check, assume not flagged
-    fi
-} #closed is_file_flagged
-
-# Clear all autopak flags #vers 1
-clear_autopak_flags() {
-    local target_dir="$1"
-
-    [[ ! "$QUIET" == true ]] && echo "🧹 Clearing AutoPak processing flags..."
-
-    local cleared_count=0
-    local FIND_OPTS=()
-    $RECURSIVE || FIND_OPTS+=(-maxdepth 1)
-
-    while IFS= read -r -d '' file; do
-        if command -v setfattr &> /dev/null; then
-            setfattr -x user.autopak.processed "$file" 2>/dev/null && ((cleared_count++))
-            setfattr -x user.autopak.date "$file" 2>/dev/null
-            setfattr -x user.autopak.version "$file" 2>/dev/null
-        fi
-    done < <(find "$target_dir" "${FIND_OPTS[@]}" -type f -print0)
-
-    [[ ! "$QUIET" == true ]] && echo "✅ Cleared flags from $cleared_count files"
-} #closed clear_autopak_flags
-
-# Timeout wrapper for operations #vers 1
-run_with_timeout() {
-    local timeout_duration="$1"
-    local operation_name="$2"
-    shift 2
-    local command=("$@")
-
-    [[ ! "$QUIET" == true ]] && echo "⏱️ Running $operation_name (timeout: ${timeout_duration}s)"
-
-    # Run command in background
-    "${command[@]}" &
-    local cmd_pid=$!
-
-    # Start timeout counter
-    (
-        sleep "$timeout_duration"
-        if kill -0 "$cmd_pid" 2>/dev/null; then
-            [[ ! "$QUIET" == true ]] && echo "⚠️ Operation timed out, killing process..."
-            kill -TERM "$cmd_pid" 2>/dev/null
-            sleep 5
-            kill -KILL "$cmd_pid" 2>/dev/null
-        fi
-    ) &
-    local timeout_pid=$!
-
-    # Wait for command to complete
-    local exit_code=0
-    if wait "$cmd_pid"; then
-        exit_code=0
-    else
-        exit_code=1
-    fi
-
-    # Kill timeout process if command completed
-    kill "$timeout_pid" 2>/dev/null
-    wait "$timeout_pid" 2>/dev/null
-
-    return $exit_code
-} #closed run_with_timeout
-
-
-# Clean up duplicate _repacked filenames #vers 1
-cleanup_repacked_files() {
-    local target_dir="$1"
-
-    [[ ! "$QUIET" == true ]] && echo "🧹 Cleaning up duplicate _repacked files..."
-
-    local cleaned_count=0
-    local FIND_OPTS=()
-    $RECURSIVE || FIND_OPTS+=(-maxdepth 1)
-
-    # Find files with multiple _repacked in name
-    while IFS= read -r -d '' file; do
-        local basename=$(basename "$file")
-        if [[ "$basename" =~ _repacked ]]; then
-            should_process=false
-            skip_reason="already repacked"
-        fi #1
-
-        local dirname=$(dirname "$file")
-
-        # Count how many _repacked instances
-        local repacked_count=$(echo "$basename" | grep -o "_repacked" | wc -l)
-
-        if (( repacked_count > 1 )); then
-            # Create clean name with only one _repacked
-            local clean_name=$(echo "$basename" | sed 's/_repacked\(_repacked\)*/\_repacked/')
-            local clean_path="$dirname/$clean_name"
-
-            # Only rename if clean name doesn't exist
-            if [[ ! -e "$clean_path" ]]; then
-                mv "$file" "$clean_path"
-                [[ ! "$QUIET" == true ]] && echo "  📝 $(basename "$file") → $clean_name"
-                ((cleaned_count++))
-            else
-                [[ ! "$QUIET" == true ]] && echo "  🗑️ Removing duplicate: $(basename "$file")"
-                secure_delete_file "$file"
-                ((cleaned_count++))
-            fi
-        fi
-    done < <(find "$target_dir" "${FIND_OPTS[@]}" -name "*_repacked_repacked*" -type f -print0)
-
-    [[ ! "$QUIET" == true ]] && echo "✅ Cleaned up $cleaned_count files"
-} #closed cleanup_repacked_files
-
-# Password vault management #vers 1
-init_password_vault() {
-    local vault_file="$1"
-
-    if [[ ! -f "$vault_file" ]]; then
-        [[ ! "$QUIET" == true ]] && echo "🔐 Creating new password vault: $vault_file"
-
-        # Prompt for master password
-        read -s -p "Enter master password for vault: " MASTER_PASSWORD
-        echo
-        read -s -p "Confirm master password: " confirm_password
-        echo
-
-        if [[ "$MASTER_PASSWORD" != "$confirm_password" ]]; then
-            echo "❌ Passwords don't match!"
-            return 1
-        fi
-
-        # Create encrypted vault file
-        echo '{"version":"1.0","passwords":{}}' | openssl enc -aes-256-cbc -salt -pass pass:"$MASTER_PASSWORD" -out "$vault_file"
-        [[ ! "$QUIET" == true ]] && echo "✅ Password vault created"
-    fi
-
-    return 0
-} #closed init_password_vault
-
-# Add password to vault #vers 1
-add_password_to_vault() {
-    local vault_file="$1"
-    local archive_name="$2"
-    local password="$3"
-
-    if [[ ! -f "$vault_file" ]]; then
-        echo "❌ Password vault not found: $vault_file"
-        return 1
-    fi
-
-    # Decrypt vault
-    local temp_vault="/tmp/autopak_vault_$.json"
-    if ! openssl enc -aes-256-cbc -d -salt -pass pass:"$MASTER_PASSWORD" -in "$vault_file" -out "$temp_vault" 2>/dev/null; then
-        echo "❌ Failed to decrypt password vault (wrong master password?)"
-        rm -f "$temp_vault"
-        return 1
-    fi
-
-    # Add password using jq
-    if command -v jq &> /dev/null; then
-        jq --arg name "$archive_name" --arg pass "$password" '.passwords[$name] = $pass' "$temp_vault" > "${temp_vault}.new"
-        mv "${temp_vault}.new" "$temp_vault"
-
-        # Re-encrypt vault
-        openssl enc -aes-256-cbc -salt -pass pass:"$MASTER_PASSWORD" -in "$temp_vault" -out "$vault_file"
-        rm -f "$temp_vault"
-
-        [[ ! "$QUIET" == true ]] && echo "🔐 Password stored for: $archive_name"
-    else
-        echo "❌ jq required for password vault management"
-        rm -f "$temp_vault"
-        return 1
-    fi
-
-    return 0
-} #closed add_password_to_vault
-
-# Get password from vault #vers 1
-get_password_from_vault() {
-    local vault_file="$1"
-    local archive_name="$2"
-
-    if [[ ! -f "$vault_file" ]]; then
-        return 1
-    fi
-
-    # Decrypt vault
-    local temp_vault="/tmp/autopak_vault_$.json"
-    if ! openssl enc -aes-256-cbc -d -salt -pass pass:"$MASTER_PASSWORD" -in "$vault_file" -out "$temp_vault" 2>/dev/null; then
-        rm -f "$temp_vault"
-        return 1
-    fi
-
-    # Get password using jq
-    if command -v jq &> /dev/null; then
-        local password=$(jq -r --arg name "$archive_name" '.passwords[$name] // empty' "$temp_vault")
-        rm -f "$temp_vault"
-
-        if [[ -n "$password" && "$password" != "null" ]]; then
-            echo "$password"
-            return 0
-        fi
-    else
-        rm -f "$temp_vault"
-    fi
-
-    return 1
-} #closed get_password_from_vault
-
-# CRITICAL FIX: Secure file deletion - REMOVED INFINITE RECURSION
-secure_delete_file() {
-    local file="$1"
-
-    if [[ ! "$SECURE_DELETE" == true ]] || [[ ! -f "$file" ]]; then
-        rm -f "$file" 2>/dev/null  # FIXED: Use rm instead of recursive call
-        return 0
-    fi #1
-
-    [[ ! "$QUIET" == true ]] && echo "🔒 Securely deleting: $(basename "$file")"
-
-    # Multiple pass secure deletion
-    if command -v shred &> /dev/null; then
-        shred -vfz -n 3 "$file" 2>/dev/null
-    elif command -v wipe &> /dev/null; then
-        wipe -rf "$file" 2>/dev/null
-    else
-        # Fallback: overwrite with random data
-        local filesize=$(stat -c%s "$file" 2>/dev/null || echo "0")
-        if (( filesize > 0 )); then
-            dd if=/dev/urandom of="$file" bs=1024 count=$((filesize / 1024 + 1)) 2>/dev/null
-            sync
-        fi #2
-        rm -f "$file" 2>/dev/null  # FIXED: Use rm instead of recursive call
-    fi #1
-
-    [[ ! "$QUIET" == true ]] && echo "✅ Secure deletion completed"
-} #closed secure_delete_file
-
-# Handle encrypted archive extraction #vers 1
-extract_encrypted_archive() {
-    local archive_file="$1"
-    local temp_dir="$2"
-    local archive_type="$3"
-
-    # Check if we should skip passworded files
-    if [[ "$SKIP_PASSWORDED" == true ]]; then
-        log_passworded_file "$archive_file" "Skipped due to --skip-passworded flag"
-        [[ ! "$QUIET" == true ]] && echo "⏩ Skipping passworded archive: $(basename "$archive_file")"
-        return 1  # Return failure to skip processing
-    fi #1
-
-    local password=""
-    local extraction_success=false
-
-        # Try to get password from vault first
-    if [[ -n "$PASSWORD_VAULT" ]]; then
-        password=$(get_password_from_vault "$PASSWORD_VAULT" "$(basename "$archive_file")")
-    fi #1
-
-    # Try password file if no vault password found
-    if [[ -z "$password" && -f "$PASSWORD_FILE" ]]; then
-        password=$(head -n1 "$PASSWORD_FILE")
-    fi #1
-
-    # If still no password, check if we should prompt or skip
-    if [[ -z "$password" ]]; then
-        if [[ "$FLAG_PASSWORDED" == true ]]; then
-            log_passworded_file "$archive_file" "No password available, requires manual input"
-        fi #1
-
-        read -s -p "Enter password for $(basename "$archive_file") (or Ctrl+C to skip): " password
-        echo
-
-        # Optionally store in vault
-        if [[ -n "$PASSWORD_VAULT" && -n "$password" ]]; then
-            add_password_to_vault "$PASSWORD_VAULT" "$(basename "$archive_file")" "$password"
-        fi #2
-    fi #1
-
-    # Try extraction with password
-    case "$archive_type" in
-        zip)
-            unzip -P "$password" -qq "$archive_file" -d "$temp_dir" 2>/dev/null && extraction_success=true
-            ;;
-        rar)
-            unrar x -p"$password" -inul "$archive_file" "$temp_dir/" 2>/dev/null && extraction_success=true
-            ;;
-        7z)
-            7z x -p"$password" -bd -y -o"$temp_dir" "$archive_file" >/dev/null 2>&1 && extraction_success=true
-            ;;
-    esac # in "$archive_type"
-
-    if [[ "$extraction_success" == true ]]; then
-        [[ ! "$QUIET" == true ]] && echo "🔓 Successfully extracted encrypted archive"
-        return 0
-    else
-        [[ ! "$QUIET" == true ]] && echo "❌ Failed to extract encrypted archive (wrong password?)"
-        return 1
-    fi #1
-} #closed extract_encrypted_archive
-
-# Create encrypted archive #vers 1
-create_encrypted_archive() {
-    local source_dir="$1"
-    local output_file="$2"
-    local archiver="$3"
-    local compression_opts="$4"
-
-    if [[ ! "$ENCRYPT_ARCHIVES" == true ]]; then
-        return 1  # Not encrypting, use normal method
-    fi
-
-    local password=""
-
-    # Get encryption password
-    if [[ -n "$PASSWORD_VAULT" ]]; then
-        password=$(get_password_from_vault "$PASSWORD_VAULT" "$(basename "$output_file")")
-    fi
-
-    if [[ -z "$password" ]]; then
-        read -s -p "Enter password for encrypted archive $(basename "$output_file"): " password
-        echo
-
-        # Store in vault
-        if [[ -n "$PASSWORD_VAULT" && -n "$password" ]]; then
-            add_password_to_vault "$PASSWORD_VAULT" "$(basename "$output_file")" "$password"
-        fi
-    fi
-
-    [[ ! "$QUIET" == true ]] && echo "🔐 Creating encrypted archive..."
-
-    # Create encrypted archive
-    case "$archiver" in
-        7z)
-            7z a -t7z -p"$password" ${compression_opts:-"-mx=9"} -m0=lzma2 "$output_file" "$source_dir"/* >/dev/null 2>&1
-            ;;
-        zip)
-            (cd "$source_dir" && zip -P "$password" -r ${compression_opts:-"-9"} -q "$output_file" * 2>/dev/null)
-            ;;
-        *)
-            [[ ! "$QUIET" == true ]] && echo "⚠️ Encryption not supported for $archiver format"
-            return 1
-            ;;
-    esac
-
-    if [[ $? -eq 0 ]]; then
-        [[ ! "$QUIET" == true ]] && echo "🔐 Encrypted archive created successfully"
-        return 0
-    else
-        [[ ! "$QUIET" == true ]] && echo "❌ Failed to create encrypted archive"
-        return 1
-    fi
-} #closed create_encrypted_archive
-
-# Read exclude configuration file #vers 1
-read_exclude_config() {
-    local exclude_file="autopak.exclude.conf"
-
-    # Check for exclude file in current directory first, then user home
-    [[ ! -f "$exclude_file" ]] && exclude_file="$HOME/.autopak.exclude.conf"
-    [[ ! -f "$exclude_file" ]] && exclude_file="/etc/autopak/autopak.exclude.conf"
-
-    if [[ ! -f "$exclude_file" ]]; then
-        [[ ! "$QUIET" == true ]] && echo "📋 No exclude config found, using command-line patterns only"
-        return 0
-    fi
-
-    [[ ! "$QUIET" == true ]] && echo "📋 Reading exclude config: $exclude_file"
-
-    # Initialize arrays
-    EXCLUDE_EXTENSIONS=()
-    EXCLUDE_PATTERNS=()
-    EXCLUDE_DIRECTORIES=()
-
-    local current_section=""
-
-    while IFS= read -r line; do
-        # Skip comments and empty lines
-        [[ "$line" =~ ^[[:space:]]*# ]] && continue
-        [[ -z "${line// }" ]] && continue
-
-        # Check for section headers
-        if [[ "$line" =~ ^\[([a-z]+)\]$ ]]; then
-            current_section="${BASH_REMATCH[1]}"
-            continue
-        fi
-
-        # Parse based on current section
-        case "$current_section" in
-            extensions)
-                # Remove any leading dots and whitespace
-                local ext=$(echo "$line" | sed 's/^[[:space:]]*\.*//' | sed 's/[[:space:]]*$//')
-                [[ -n "$ext" ]] && EXCLUDE_EXTENSIONS+=("$ext")
-                ;;
-            patterns)
-                local pattern=$(echo "$line" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
-                [[ -n "$pattern" ]] && EXCLUDE_PATTERNS+=("$pattern")
-                ;;
-            directories)
-                local dir=$(echo "$line" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
-                [[ -n "$dir" ]] && EXCLUDE_DIRECTORIES+=("$dir")
-                ;;
-            limits)
-                # Handle size limits
-                if [[ "$line" =~ ^min_size=(.+)$ ]]; then
-                    MIN_SIZE=$(parse_size "${BASH_REMATCH[1]}")
-                elif [[ "$line" =~ ^max_size=(.+)$ ]]; then
-                    MAX_SIZE=$(parse_size "${BASH_REMATCH[1]}")
-                fi
-                ;;
-        esac
-    done < "$exclude_file"
-
-    # Debug output
-    if [[ ! "$QUIET" == true ]]; then
-        echo "📋 Loaded exclude config:"
-        echo "  Extensions: ${#EXCLUDE_EXTENSIONS[@]} (${EXCLUDE_EXTENSIONS[*]})"
-        echo "  Patterns: ${#EXCLUDE_PATTERNS[@]}"
-        echo "  Directories: ${#EXCLUDE_DIRECTORIES[@]}"
-    fi
-} #closed read_exclude_config
+} #closed proc_arc
 
 # Export function for use in parallel processing
-export -f process_archive
-export -f get_file_size
-export -f format_size
-export -f calc_compression_ratio
-export -f verify_archive
-export -f generate_output_filename
-export -f save_resume_state
-export -f is_already_processed
-export -f is_multipart_rar
-export -f get_multipart_first_part
-export -f repair_rar_file
-export -f is_rar_corrupted
-export -f process_folder
-export -f process_unpack
-export -f generate_checksum_file
-export -f set_processed_flag
-export -f is_file_flagged
-export -f run_with_timeout
-export -f init_password_vault
-export -f add_password_to_vault
-export -f get_password_from_vault
-export -f secure_delete_file
-export -f extract_encrypted_archive
-export -f create_encrypted_archive
-export IGN_CORR
+export -f proc_arc
+export -f get_size
+export -f fmt_size
+export -f calc_ratio
+export -f verify_arc
+export -f gen_filename
+export -f save_state
+export -f is_processed
+export -f is_multipart
+export -f get_first_part
+export -f repair_rar
+export -f is_corrupt
+export -f gen_checksum
+export -f set_flag
+export -f is_flagged
+export -f sec_delete
+export -f show_comp_prog
+export -f show_ext_prog
+export -f show_arc_prog
+export IGN_COR
 
 # Main execution
 
@@ -2644,123 +1624,93 @@ main() {
     # Save original argument count before parsing
     local original_arg_count=$#
 
-    load_config
+    load_cfg
+    parse_args "$@"
+    init_log
 
-    # Read exclude config if it exists (optional, won't break if missing)
-    if command -v read_exclude_config &> /dev/null; then
-        read_exclude_config
-    fi #1
-
-    parse_arguments "$@"
-    init_logging
-
-    if $SINGLE_FILE; then
-        if [[ ! -f "$TARG_DIR" ]]; then
-            echo "❌ Error: File '$TARG_DIR' doesn't exist or is not accessible"
+    if $SING_FIL; then
+        if [[ ! -f "$TDIR" ]]; then
+            echo "❌ Error: File '$TDIR' doesn't exist or is not accessible"
             exit 1
         fi #2
-        echo "🎯 Single file mode: $(basename "$TARG_DIR")"
-        INCL_PAT="^$(basename "$TARG_DIR")$"
-        TARG_DIR=$(dirname "$TARG_DIR")
+        echo "🎯 Single file mode: $(basename "$TDIR")"
+        INCL="^$(basename "$TDIR")$"
+        TDIR=$(dirname "$TDIR")
     fi #1
 
     # Handle flag clearing
-    if $CLEAR_FLAGS; then
-        clear_autopak_flags "$TARG_DIR"
+    if $CLR_FLGS; then
+        echo "🧹 Clearing AutoPak processing flags..."
+        local cleared_count=0
+        local FIND_OPTS=()
+        $REC || FIND_OPTS+=(-maxdepth 1)
+
+        while IFS= read -r -d '' file; do
+            if command -v setfattr &> /dev/null; then
+                setfattr -x user.autopak.processed "$file" 2>/dev/null && ((cleared_count++))
+                setfattr -x user.autopak.date "$file" 2>/dev/null
+                setfattr -x user.autopak.version "$file" 2>/dev/null
+            fi
+        done < <(find "$TDIR" "${FIND_OPTS[@]}" -type f -print0)
+
+        [[ ! "$Q" == true ]] && echo "✅ Cleared flags from $cleared_count files"
         exit 0
     fi
 
-    # Initialize checksum database
-    if $GEN_CHECKSUMS || $CHECK_DUPLICATES; then
-        init_checksum_db
-    fi
-
-    # Initialize password vault if specified
-    if [[ -n "$PASSWORD_VAULT" ]]; then
-        if [[ -z "$MASTER_PASSWORD" ]]; then
-            read -s -p "Enter master password for vault: " MASTER_PASSWORD
-            echo
-        fi
-        init_password_vault "$PASSWORD_VAULT"
-    fi
-
-    # Check for duplicates
-    check_for_duplicates
-
     # Validate inputs - handle different error scenarios
     if [[ $original_arg_count -eq 0 ]]; then
-        show_help
+        autopak_help
         exit 1
     fi #1
 
-    if [[ -z "$TARG_DIR" ]]; then
+    if [[ -z "$TDIR" ]]; then
         echo "❌ Error: No directory specified"
         echo "💡 Usage: $(basename "$0") [OPTIONS] <directory>"
         exit 1
     fi #1
 
-    if [[ ! -d "$TARG_DIR" ]]; then
-        echo "❌ Error: Directory '$TARG_DIR' doesn't exist or is not accessible"
+    if [[ ! -d "$TDIR" ]]; then
+        echo "❌ Error: Directory '$TDIR' doesn't exist or is not accessible"
         echo "💡 Please check the path and try again"
         exit 1
     fi #1
 
-    # Handle cleanup repacked files
-    if $CLEANUP_REPACKED; then
-        cleanup_repacked_files "$TARG_DIR"
-        exit 0
-    fi #1
-
     # Validate archiver
-    case "$ARC_R" in
+    case "$ARC" in
         7z|zip|zstd|xz|gz|tar) ;;
-        *) echo "❌ Invalid archiver: $ARC_R"; exit 2 ;;
-    esac # in "$ARC_R"
+        *) echo "❌ Invalid archiver: $ARC"; exit 2 ;;
+    esac # in "$ARC"
 
-    check_dependencies
-    setup_cpu_limiting
+    check_deps
+    setup_cpu
 
     mkdir -p "$WORK_DIR"
     scan_files
 
-    # In check_dependencies function, add:
-    if $ENCRYPT_ARCHIVES || [[ -n "$PASSWORD_VAULT" ]]; then
-        for cmd in openssl jq; do
-            if ! command -v "$cmd" &> /dev/null; then
-                missing_deps+=("$cmd")
-            fi
-        done
-    fi
-
-    if $SECURE_DELETE; then
-        # shred and wipe are optional, script has fallback
-        [[ ! $(command -v shred) && ! $(command -v wipe) ]] && optional_deps+=("secure-delete")
-    fi
-
     # Early exit for scan-only mode
-    if $SCN_ONLY; then
+    if $SCN; then
         echo
         echo "📋 Scan Results Summary:"
         echo "========================"
-        echo "📁 Total files found: $((TOT_F + ${#SKP_FILS[@]}))"
+        echo "📁 Total files found: $((TOT_F + ${#SKP_F[@]}))"
         echo "✅ Files to process: $TOT_F"
-        echo "⏩ Files to skip: ${#SKP_FILS[@]}"
-        echo "📊 Total size to process: $(format_size "$O_SIZE")"
+        echo "⏩ Files to skip: ${#SKP_F[@]}"
+        echo "📊 Total size to process: $(fmt_size "$O_SIZE")"
 
-        if (( ${#SKP_FILS[@]} > 0 )) && [[ ! "$QUIET" == true ]]; then
+        if (( ${#SKP_F[@]} > 0 )) && [[ ! "$Q" == true ]]; then
             echo
             echo "⏩ Skipped files:"
             for result in "${SC_RLTS[@]}"; do
                 IFS='|' read -r file size action reason <<< "$result"
                 if [[ "$action" == "skip" ]]; then
-                    echo "  • $(basename "$file") ($(format_size "$size")) - $reason"
+                    echo "  • $(basename "$file") ($(fmt_size "$size")) - $reason"
                 fi #3
             done ##1
         fi #2
 
         echo
         echo "💡 Use without --scan-only to process these files"
-        cleanup_and_exit
+        cleanup_exit
         return
     fi #1
 
@@ -2770,56 +1720,53 @@ main() {
     fi #1
 
     # Check disk space
-    if [[ ! "$DRY_RUN" == true ]]; then
-        local estimated_space=$(estimate_space_needed)
-        check_disk_space "$TARG_DIR" "$estimated_space"
+    if [[ ! "$DRY" == true ]]; then
+        local estimated_space=$(est_space)
+        check_space "$TDIR" "$estimated_space"
     fi #1
 
     # Display configuration
-    if [[ ! "$QUIET" == true ]]; then
+    if [[ ! "$Q" == true ]]; then
         echo
         echo "📋 Processing Configuration:"
         echo "============================="
-        echo "🔍 Target directory: $TARG_DIR"
-        echo "📦 Archiver: $ARC_R"
-        echo "🔄 Recursive: $RECURSIVE"
-        echo "🗑️ Delete original: $DEL_ORG"
-        echo "💾 Backup original: $BUP_ORG"
-        echo "✅ Verify archives: $VFY_ARCS"
-        echo "📁 Extract multi-part: $EXT_MULP"
-        echo "🔧 Repair corrupted: $REP_CRPT"
-        echo "🛠️ Keep broken files: $KP_BRKF"
-        echo "🚫 Ignore corruption: $IGN_CORR"
-        echo "💡 Dry run: $DRY_RUN"
-        echo "🔇 Quiet mode: $QUIET"
-        echo "⚡ Parallel jobs: $PAR_JOBS"
-        [[ $CPU_LIMIT -gt 0 ]] && echo "🔧 CPU limit: ${CPU_LIMIT}%"
-        [[ $NICE_LVL -ne 0 ]] && echo "🔧 Nice level: $NICE_LVL"
-        [[ -n "$COPN_LVL" ]] && echo "📊 Compression level: $COPN_LVL"
-        [[ -n "$INCL_PAT" ]] && echo "🎯 Include pattern: $INCL_PAT"
-        [[ -n "$EXCL_PAT" ]] && echo "🚫 Exclude pattern: $EXCL_PAT"
-        [[ $MIN_SIZE -gt 0 ]] && echo "📏 Min size: $(format_size "$MIN_SIZE")"
-        [[ $MAX_SIZE -gt 0 ]] && echo "📏 Max size: $(format_size "$MAX_SIZE")"
+        echo "🔍 Target directory: $TDIR"
+        echo "📦 Archiver: $ARC"
+        echo "🔄 Recursive: $REC"
+        echo "🗑️ Delete original: $DEL"
+        echo "💾 Backup original: $BUP"
+        echo "✅ Verify archives: $VFY"
+        echo "📁 Extract multi-part: $EXT_MP"
+        echo "🔧 Repair corrupted: $REP_CRP"
+        echo "🛠️ Keep broken files: $KP_BRK"
+        echo "🚫 Ignore corruption: $IGN_COR"
+        echo "💡 Dry run: $DRY"
+        echo "🔇 Quiet mode: $Q"
+        echo "⚡ Parallel jobs: $JOBS"
+        [[ $CPU_LIM -gt 0 ]] && echo "🔧 CPU limit: ${CPU_LIM}%"
+        [[ $NICE -ne 0 ]] && echo "🔧 Nice level: $NICE"
+        [[ -n "$LVL" ]] && echo "📊 Compression level: $LVL"
+        [[ -n "$INCL" ]] && echo "🎯 Include pattern: $INCL"
+        [[ -n "$EXCL" ]] && echo "🚫 Exclude pattern: $EXCL"
+        [[ $MINS -gt 0 ]] && echo "📏 Min size: $(fmt_size "$MINS")"
+        [[ $MAXS -gt 0 ]] && echo "📏 Max size: $(fmt_size "$MAXS")"
         echo "📝 Log file: $LOGFILE"
         echo "📁 Files to process: $TOT_F"
-        echo "📊 Total size: $(format_size "$O_SIZE")"
+        echo "📊 Total size: $(fmt_size "$O_SIZE")"
 
         # Show exclude config status
-        if (( ${#EXCLUDE_EXTENSIONS[@]} > 0 )); then
-            echo "🚫 Excluding extensions: ${EXCLUDE_EXTENSIONS[*]}"
+        if (( ${#EXCL_EXT[@]} > 0 )); then
+            echo "🚫 Excluding extensions: ${EXCL_EXT[*]}"
         fi
-        if (( ${#EXCLUDE_PATTERNS[@]} > 0 )); then
-            echo "🚫 Excluding patterns: ${EXCLUDE_PATTERNS[*]}"
-        fi
-        if (( ${#EXCLUDE_DIRECTORIES[@]} > 0 )); then
-            echo "🚫 Excluding directories: ${EXCLUDE_DIRECTORIES[*]}"
+        if (( ${#EXCL_PATN[@]} > 0 )); then
+            echo "🚫 Excluding patterns: ${EXCL_PATN[*]}"
         fi
         echo
     fi #1
 
     # Phase 2: Process files
     C_PHSE="Processing files"
-    [[ ! "$QUIET" == true ]] && echo "🔄 Phase 2: Processing archive files..."
+    [[ ! "$Q" == true ]] && echo "🔄 Phase 2: Processing archive files..."
 
     # Create processing queue from scan results
     local processing_queue=()
@@ -2831,52 +1778,46 @@ main() {
     done
 
     # Process files
-    if (( PAR_JOBS > 1 )); then
+    if (( JOBS > 1 )); then
         # Parallel processing using xargs with proper environment
         printf '%s\n' "${processing_queue[@]}" | \
         WORK_DIR="$WORK_DIR" \
-        ARC_R="$ARC_R" \
-        COPN_LVL="$COPN_LVL" \
-        DEL_ORG="$DEL_ORG" \
-        BUP_ORG="$BUP_ORG" \
-        VFY_ARCS="$VFY_ARCS" \
-        EXT_MULP="$EXT_MULP" \
-        REP_CRPT="$REP_CRPT" \
-        KP_BRKF="$KP_BRKF" \
-        DRY_RUN="$DRY_RUN" \
-        QUIET="$QUIET" \
-        RESUME="$RESUME" \
-        RSME_FIL="$RSME_FIL" \
-        MIN_SIZE="$MIN_SIZE" \
-        MAX_SIZE="$MAX_SIZE" \
-        INCL_PAT="$INCL_PAT" \
-        EXCL_PAT="$EXCL_PAT" \
-        SKP_FILS="$SKP_FILS" \
+        ARC="$ARC" \
+        LVL="$LVL" \
+        DEL="$DEL" \
+        BUP="$BUP" \
+        VFY="$VFY" \
+        EXT_MP="$EXT_MP" \
+        REP_CRP="$REP_CRP" \
+        KP_BRK="$KP_BRK" \
+        DRY="$DRY" \
+        Q="$Q" \
+        RES="$RES" \
+        RSM_FIL="$RSM_FIL" \
+        MINS="$MINS" \
+        MAXS="$MAXS" \
+        INCL="$INCL" \
+        EXCL="$EXCL" \
+        SKP_F="$SKP_F" \
         FAIL_F="$FAIL_F" \
-        IGN_CORR="$IGN_CORR" \
+        IGN_COR="$IGN_COR" \
         PROC_F="$PROC_F" \
         REP_SIZE="$REP_SIZE" \
         WORK_DIR="$WORK_DIR" \
-        UPKTO_FDR="$UPKTO_FDR" \
-        xargs -P "$PAR_JOBS" -I {} bash -c 'if [[ "$FDRTO_ARCS" == true ]]; then process_folder "{}" 1 '"$TOT_F"'; elif [[ "$UPKTO_FDR" == true ]]; then process_unpack "{}" 1 '"$TOT_F"'; else process_archive "{}" 1 '"$TOT_F"'; fi'
+        UNP_FDR="$UNP_FDR" \
+        xargs -P "$JOBS" -I {} bash -c 'proc_arc "{}" 1 '"$TOT_F"
     else
         # Sequential processing
         local counter=0
         for item in "${processing_queue[@]}"; do
             ((counter++))
-            if $FDRTO_ARCS; then
-                process_folder "$item" "$counter" "$TOT_F"
-            elif $UPKTO_FDR; then
-                process_unpack "$item" "$counter" "$TOT_F"
-            else
-                process_archive "$item" "$counter" "$TOT_F"
-            fi #2
+            proc_arc "$item" "$counter" "$TOT_F"
         done
     fi #1
 
     # Cleanup
     rm -rf "$WORK_DIR"
-    [[ -f "$RSME_FIL" ]] && rm -f "$RSME_FIL"
+    [[ -f "$RSM_FIL" ]] && rm -f "$RSM_FIL"
     [[ -f "$S_CACHE" ]] && rm -f "$S_CACHE"
 
     # Stop CPU limiting if active
@@ -2894,27 +1835,18 @@ main() {
     echo
     echo "📋 Final Summary:"
     echo "===================="
-    echo "📁 Total files found: $((TOT_F + ${#SKP_FILS[@]}))"
+    echo "📁 Total files found: $((TOT_F + ${#SKP_F[@]}))"
     echo "✅ Successfully processed: $PROC_F"
     echo "❌ Failed: ${#FAIL_F[@]}"
-    echo "⏩ Skipped: ${#SKP_FILS[@]}"
+    echo "⏩ Skipped: ${#SKP_F[@]}"
 
-    # Show passworded files summary
-    if [[ "$FLAG_PASSWORDED" == true ]] && [[ -f "$PASSWORDED_LOG" ]]; then
-        local passworded_count=$(grep -c "^Passworded file detected:" "$PASSWORDED_LOG" 2>/dev/null || echo "0")
-        if (( passworded_count > 0 )); then
-            echo "🔐 Passworded files logged: $passworded_count"
-            echo "📋 Passworded files log: $PASSWORDED_LOG"
-        fi
-    fi
-
-    if (( PROC_F > 0 )) && [[ ! "$DRY_RUN" == true ]]; then
-        echo "📊 Original total size: $(format_size "$O_SIZE")"
-        echo "📊 Repacked total size: $(format_size "$REP_SIZE")"
-        local total_ratio=$(calc_compression_ratio "$O_SIZE" "$REP_SIZE")
+    if (( PROC_F > 0 )) && [[ ! "$DRY" == true ]]; then
+        echo "📊 Original total size: $(fmt_size "$O_SIZE")"
+        echo "📊 Repacked total size: $(fmt_size "$REP_SIZE")"
+        local total_ratio=$(calc_ratio "$O_SIZE" "$REP_SIZE")
         echo "📊 Overall compression: $total_ratio"
         local space_saved=$((O_SIZE - REP_SIZE))
-        echo "💾 Space saved: $(format_size "$space_saved")"
+        echo "💾 Space saved: $(fmt_size "$space_saved")"
     fi #1
 
     printf "⏱️ Total time: "
@@ -2932,10 +1864,10 @@ main() {
         printf "  • %s\n" "${FAIL_F[@]}"
     fi #1
 
-    if (( ${#SKP_FILS[@]} )) && [[ ! "$QUIET" == true ]]; then
+    if (( ${#SKP_F[@]} )) && [[ ! "$Q" == true ]]; then
         echo
         echo "⏩ Skipped files:"
-        printf "  • %s\n" "${SKP_FILS[@]}"
+        printf "  • %s\n" "${SKP_F[@]}"
     fi #1
 
     echo
